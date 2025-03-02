@@ -35,16 +35,18 @@ namespace UnityDiffTool
         {
             try
             {
-                // Check for verbose flag
+                // Check for flags
                 verboseMode = args.Contains("--verbose");
+                bool testMode = args.Contains("--test");
                 
                 // Get non-flag arguments
                 var nonFlagArgs = args.Where(arg => !arg.StartsWith("--")).ToArray();
                 
                 if (nonFlagArgs.Length < 3)
                 {
-                    Console.WriteLine("Usage: UnityDiffTool.exe <mod source folder> <old src folder> <new src folder> [--verbose]");
+                    Console.WriteLine("Usage: UnityDiffTool.exe <mod source folder> <old src folder> <new src folder> [--verbose] [--test]");
                     Console.WriteLine("  --verbose: Enable detailed debug output");
+                    Console.WriteLine("  --test: Include test diff example in output");
                     return;
                 }
 
@@ -81,8 +83,8 @@ namespace UnityDiffTool
                 Log("Comparing patched methods...");
                 var reportItems = AnalyzePatchedMethods(patchMethods, oldClassMap, newClassMap, modSrcFolder);
 
-                // Only add test diff in verbose mode
-                if (verboseMode)
+                // Add test diff if test mode is enabled
+                if (testMode)
                 {
                     reportItems.Insert(0, GenerateTestDiff());
                 }
@@ -760,7 +762,7 @@ namespace UnityDiffTool
                     font-family: 'Cascadia Code', 'Consolas', monospace;
                     font-size: 14px;
                     line-height: 1.4;
-                    overflow-x: auto;
+                    overflow: hidden;
                     background: #272a3a;
                     border-radius: 4px;
                     display: flex;
@@ -769,10 +771,11 @@ namespace UnityDiffTool
                 }
                 /* Two-pane diff view style */
                 .old-pane, .new-pane {
-                    flex: 1;
                     overflow: auto;
                     background: #272a3a;
                     width: 50%;
+                    min-width: 20%;
+                    max-width: 80%;
                 }
                 .diff-resizer {
                     width: 6px;
@@ -782,7 +785,12 @@ namespace UnityDiffTool
                     left: 50%;
                     top: 0;
                     bottom: 0;
-                    z-index: 10;
+                    z-index: 100;
+                    transform: translateX(-50%);
+                    transition: background-color 0.2s;
+                }
+                .diff-resizer:hover, .diff-resizer.resizing {
+                    background: rgba(127, 140, 141, 0.8);
                 }
                 .diff-line {
                     display: flex;
@@ -882,7 +890,7 @@ namespace UnityDiffTool
             sb.AppendLine("<body>");
 
             sb.AppendLine("<div id=\"header\">");
-            sb.AppendLine("<h1>Diff1cult - Relevant Source Change Report</h1>");
+            sb.AppendLine("<h1>Diff1cult - Relevant Source Change Report<sub style=\"font-size: 0.5em; margin-left: 8px;\">version 1.0 - by innominata, grok3 and claude3.7</sub></h1>");
             sb.AppendLine($"<div id=\"summary\">Found {totalPatches} Patched Methods. Changes Detected in {items.Count}.</div>");
             sb.AppendLine("<button id=\"log-toggle\">Show Log</button>");
             sb.AppendLine($"<div id=\"log-content\"><pre>{HtmlEncode(consoleLog.ToString())}</pre></div>");
@@ -1020,29 +1028,39 @@ namespace UnityDiffTool
                     if (!oldPane || !resizer || !newPane) return;
                     
                     let isResizing = false;
+                    let startX;
+                    let startOldWidth;
+                    let startNewWidth;
 
                     resizer.addEventListener('mousedown', (e) => {
                         isResizing = true;
+                        startX = e.clientX;
+                        startOldWidth = oldPane.offsetWidth;
+                        startNewWidth = newPane.offsetWidth;
                         document.body.style.cursor = 'col-resize';
+                        resizer.classList.add('resizing');
                         e.preventDefault();
                     });
 
                     document.addEventListener('mousemove', (e) => {
                         if (!isResizing) return;
                         
-                        const containerRect = diffContainer.getBoundingClientRect();
-                        const containerLeft = containerRect.left;
-                        const containerWidth = containerRect.width;
+                        const dx = e.clientX - startX;
+                        const containerWidth = diffContainer.offsetWidth;
                         
-                        // Calculate the new width as pixels first
-                        const newWidth = Math.max(0, Math.min(e.clientX - containerLeft, containerWidth));
-                        const percentage = (newWidth / containerWidth) * 100;
+                        // Calculate new widths
+                        let newOldWidth = (startOldWidth + dx);
+                        let newNewWidth = (startNewWidth - dx);
                         
-                        // Only update if within reasonable bounds (20% to 80%)
-                        if (percentage >= 20 && percentage <= 80) {
-                            oldPane.style.width = `${percentage}%`;
-                            newPane.style.width = `${100 - percentage}%`;
-                            resizer.style.left = `${percentage}%`;
+                        // Convert to percentages
+                        const oldWidthPercent = (newOldWidth / containerWidth) * 100;
+                        const newWidthPercent = (newNewWidth / containerWidth) * 100;
+                        
+                        // Apply bounds (20% - 80%)
+                        if (oldWidthPercent >= 20 && oldWidthPercent <= 80) {
+                            oldPane.style.width = `${oldWidthPercent}%`;
+                            newPane.style.width = `${100 - oldWidthPercent}%`;
+                            resizer.style.left = `${oldWidthPercent}%`;
                         }
                     });
 
@@ -1050,13 +1068,14 @@ namespace UnityDiffTool
                         if (isResizing) {
                             isResizing = false;
                             document.body.style.cursor = 'default';
+                            resizer.classList.remove('resizing');
                         }
                     });
 
-                    // Ensure initial position is set
-                    resizer.style.left = '50%';
+                    // Set initial position
                     oldPane.style.width = '50%';
                     newPane.style.width = '50%';
+                    resizer.style.left = '50%';
                 }
 
                 var toggleBtn = document.getElementById('log-toggle');
@@ -1189,14 +1208,11 @@ public static class End
         {
             if (verboseMode)
             {
-                Console.WriteLine($"DEBUG ExplicitSimpleDiff: oldLine='{oldLine}', newLine='{newLine}', isOldVersion={isOldVersion}");
+                Log($"DEBUG: ExplicitSimpleDiff called with:");
+                Log($"DEBUG:   oldLine: '{oldLine}'");
+                Log($"DEBUG:   newLine: '{newLine}'");
+                Log($"DEBUG:   isOldVersion: {isOldVersion}");
             }
-            
-            // Log inputs for debugging
-            Log($"ExplicitSimpleDiff called with:");
-            Log($"  oldLine: '{oldLine}'");
-            Log($"  newLine: '{newLine}'");
-            Log($"  isOldVersion: {isOldVersion}");
             
             // Split by common code delimiters
             string[] delimiters = new[] { " ", "\t", "(", ")", "[", "]", "{", "}", ";", ",", ".", ":", "=", "+", "-", "*", "/", "<", ">", "&&", "||" };
@@ -1209,23 +1225,29 @@ public static class End
             var oldMatches = Regex.Matches(oldLine, literalPattern);
             var newMatches = Regex.Matches(newLine, literalPattern);
             
-            // Log regex matches
-            Log($"  Found {oldMatches.Count} literals in oldLine:");
-            for (int i = 0; i < oldMatches.Count; i++)
+            // Log regex matches only in verbose mode
+            if (verboseMode)
             {
-                Log($"    [{i}] '{oldMatches[i].Value}' at position {oldMatches[i].Index}");
-            }
-            
-            Log($"  Found {newMatches.Count} literals in newLine:");
-            for (int i = 0; i < newMatches.Count; i++)
-            {
-                Log($"    [{i}] '{newMatches[i].Value}' at position {newMatches[i].Index}");
+                Log($"DEBUG:   Found {oldMatches.Count} literals in oldLine:");
+                for (int i = 0; i < oldMatches.Count; i++)
+                {
+                    Log($"DEBUG:     [{i}] '{oldMatches[i].Value}' at position {oldMatches[i].Index}");
+                }
+                
+                Log($"DEBUG:   Found {newMatches.Count} literals in newLine:");
+                for (int i = 0; i < newMatches.Count; i++)
+                {
+                    Log($"DEBUG:     [{i}] '{newMatches[i].Value}' at position {newMatches[i].Index}");
+                }
             }
             
             // If we can't find literals, just return encoded text
             if ((oldMatches.Count == 0 && newMatches.Count == 0) || oldLine == newLine)
             {
-                Log("  No literals found or lines are identical - returning full line");
+                if (verboseMode)
+                {
+                    Log("DEBUG:   No literals found or lines are identical - returning full line");
+                }
                 return HtmlEncode(isOldVersion ? oldLine : newLine);
             }
             
@@ -1239,7 +1261,7 @@ public static class End
                     if (oldMatches[i].Value != newMatches[i].Value)
                     {
                         diffIndices.Add(i);
-                        Log($"    Difference found at index {i}: '{oldMatches[i].Value}' vs '{newMatches[i].Value}'");
+                        Log($"DEBUG:     Difference found at index {i}: '{oldMatches[i].Value}' vs '{newMatches[i].Value}'");
                     }
                 }
                 
@@ -1255,12 +1277,12 @@ public static class End
                     string after = line.Substring(match.Index + match.Length);
                     
                     string cssClass = isOldVersion ? "deleted" : "inserted";
-                    Log($"  Single literal difference found - returning with highlighted '{value}'");
+                    Log($"DEBUG:   Single literal difference found - returning with highlighted '{value}'");
                     return $"{HtmlEncode(before)}<span class=\"{cssClass}\">{HtmlEncode(value)}</span>{HtmlEncode(after)}";
                 }
                 else 
                 {
-                    Log($"  Found {diffIndices.Count} differences - not a single literal change");
+                    Log($"DEBUG:   Found {diffIndices.Count} differences - not a single literal change");
                 }
             }
             
@@ -1268,22 +1290,22 @@ public static class End
             var valuePatternOld = Regex.Match(oldLine, @"(\w+\s*=\s*)(\d+|\""[^""]*\"")(.*)");
             var valuePatternNew = Regex.Match(newLine, @"(\w+\s*=\s*)(\d+|\""[^""]*\"")(.*)");
             
-            Log("  Checking for assignment pattern");
-            Log($"  Old match success: {valuePatternOld.Success}, Groups: {valuePatternOld.Groups.Count}");
+            Log("DEBUG:   Checking for assignment pattern");
+            Log($"DEBUG:   Old match success: {valuePatternOld.Success}, Groups: {valuePatternOld.Groups.Count}");
             if (valuePatternOld.Success)
             {
                 for (int i = 0; i < valuePatternOld.Groups.Count; i++)
                 {
-                    Log($"    Group[{i}]: '{valuePatternOld.Groups[i].Value}'");
+                    Log($"DEBUG:     Group[{i}]: '{valuePatternOld.Groups[i].Value}'");
                 }
             }
             
-            Log($"  New match success: {valuePatternNew.Success}, Groups: {valuePatternNew.Groups.Count}");
+            Log($"DEBUG:   New match success: {valuePatternNew.Success}, Groups: {valuePatternNew.Groups.Count}");
             if (valuePatternNew.Success)
             {
                 for (int i = 0; i < valuePatternNew.Groups.Count; i++)
                 {
-                    Log($"    Group[{i}]: '{valuePatternNew.Groups[i].Value}'");
+                    Log($"DEBUG:     Group[{i}]: '{valuePatternNew.Groups[i].Value}'");
                 }
             }
             
@@ -1292,7 +1314,7 @@ public static class End
                 valuePatternOld.Groups[3].Value == valuePatternNew.Groups[3].Value)
             {
                 // This is the exact case we're looking for - assignment with different values
-                Log("  Found exact assignment pattern with different values!");
+                Log("DEBUG:   Found exact assignment pattern with different values!");
                 if (isOldVersion)
                 {
                     return $"{HtmlEncode(valuePatternOld.Groups[1].Value)}<span class=\"deleted\">{HtmlEncode(valuePatternOld.Groups[2].Value)}</span>{HtmlEncode(valuePatternOld.Groups[3].Value)}";
@@ -1304,7 +1326,7 @@ public static class End
             }
             
             // Fallback - return the whole line
-            Log("  No special case found - returning whole line");
+            Log("DEBUG:   No special case found - returning whole line");
             return HtmlEncode(isOldVersion ? oldLine : newLine);
         }
     }
