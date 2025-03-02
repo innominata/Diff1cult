@@ -10,6 +10,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using DiffPlex.Chunkers;
+using System.Text.RegularExpressions;
 
 namespace UnityDiffTool
 {
@@ -19,70 +20,83 @@ namespace UnityDiffTool
 
         static void Log(string message)
         {
-            Console.WriteLine(message);
+            // Log to both the console log buffer and directly to console for immediate visibility
             consoleLog.AppendLine(message);
+            Console.WriteLine(message); // Direct console output
         }
 
         static void Main(string[] args)
         {
-            if (args.Length != 3)
+            try
             {
-                Log("Usage: UnityDiffTool <old_game_src> <new_game_src> <mod_src>");
-                return;
-            }
-
-            string oldSrcFolder = args[0];
-            string newSrcFolder = args[1];
-            string modSrcFolder = args[2];
-
-            foreach (var folder in new[] { oldSrcFolder, newSrcFolder, modSrcFolder })
-            {
-                if (!Directory.Exists(folder))
+                // Add debug test case to verify our diffing
+                TestInlineDiff();
+                
+                if (args.Length != 3)
                 {
-                    Log($"Error: Directory '{folder}' does not exist.");
+                    Log("Usage: UnityDiffTool <old_game_src> <new_game_src> <mod_src>");
                     return;
                 }
-            }
 
-            Log("Analyzing mod source code...");
-            var patchMethods = ParseModSource(modSrcFolder);
+                string oldSrcFolder = args[0];
+                string newSrcFolder = args[1];
+                string modSrcFolder = args[2];
 
-            Log($"Found {patchMethods.Count} patch methods:");
-            foreach (var pm in patchMethods)
-            {
-                Log($"  PatchFile: {pm.PatchFile}, PatchMethod: {pm.PatchMethod}, " +
-                    $"TargetClass: {pm.TargetClass}, TargetMethod: {pm.TargetMethod}");
-            }
-
-            Log("Mapping game source files...");
-            var oldClassMap = MapTypesToFiles(oldSrcFolder);
-            var newClassMap = MapTypesToFiles(newSrcFolder);
-
-            Log($"Mapped {oldClassMap.Count} types in old source ({oldSrcFolder}).");
-            Log($"Mapped {newClassMap.Count} types in new source ({newSrcFolder}).");
-
-            Log("Comparing patched methods...");
-            var reportItems = AnalyzePatchedMethods(patchMethods, oldClassMap, newClassMap, modSrcFolder);
-
-            // Add a test diff to demonstrate different highlighting styles
-            reportItems.Insert(0, GenerateTestDiff());
-
-            if (reportItems.Count == 0)
-            {
-                if (patchMethods.Count == 0)
+                foreach (var folder in new[] { oldSrcFolder, newSrcFolder, modSrcFolder })
                 {
-                    Log("No patch methods were found in the mod source.");
+                    if (!Directory.Exists(folder))
+                    {
+                        Log($"Error: Directory '{folder}' does not exist.");
+                        return;
+                    }
+                }
+
+                Log("Analyzing mod source code...");
+                var patchMethods = ParseModSource(modSrcFolder);
+
+                Log($"Found {patchMethods.Count} patch methods:");
+                foreach (var pm in patchMethods)
+                {
+                    Log($"  PatchFile: {pm.PatchFile}, PatchMethod: {pm.PatchMethod}, " +
+                        $"TargetClass: {pm.TargetClass}, TargetMethod: {pm.TargetMethod}");
+                }
+
+                Log("Mapping game source files...");
+                var oldClassMap = MapTypesToFiles(oldSrcFolder);
+                var newClassMap = MapTypesToFiles(newSrcFolder);
+
+                Log($"Mapped {oldClassMap.Count} types in old source ({oldSrcFolder}).");
+                Log($"Mapped {newClassMap.Count} types in new source ({newSrcFolder}).");
+
+                Log("Comparing patched methods...");
+                var reportItems = AnalyzePatchedMethods(patchMethods, oldClassMap, newClassMap, modSrcFolder);
+
+                // Add a test diff to demonstrate different highlighting styles
+                reportItems.Insert(0, GenerateTestDiff());
+
+                if (reportItems.Count == 0)
+                {
+                    if (patchMethods.Count == 0)
+                    {
+                        Log("No patch methods were found in the mod source.");
+                    }
+                    else
+                    {
+                        Log("No changes detected in any patched methods.");
+                    }
                 }
                 else
                 {
-                    Log("No changes detected in any patched methods.");
+                    Log($"Found {reportItems.Count} changed methods. Generating HTML report...");
+                    GenerateHtmlReport(patchMethods.Count, reportItems);
+                    Log("Report generated: diff_report.html");
                 }
             }
-            else
+            catch (Exception ex)
             {
-                Log($"Found {reportItems.Count} changed methods. Generating HTML report...");
-                GenerateHtmlReport(patchMethods.Count, reportItems);
-                Log("Report generated: diff_report.html");
+                Console.WriteLine($"Error: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
+                Environment.Exit(1);
             }
         }
 
@@ -318,6 +332,8 @@ namespace UnityDiffTool
 
         static string GenerateDiffHtml(string oldText, string newText)
         {
+            Console.WriteLine("DEBUG: GenerateDiffHtml called");
+            
             // Create a line-level differ
             var differ = new Differ();
             var builder = new InlineDiffBuilder(differ);
@@ -329,78 +345,131 @@ namespace UnityDiffTool
                 new LineEndingsPreservingChunker()
             );
 
+            Console.WriteLine($"DEBUG: Found {diff.Lines.Count} total diff lines");
+            Console.WriteLine($"DEBUG: Deleted lines: {diff.Lines.Count(l => l.Type == ChangeType.Deleted)}");
+            Console.WriteLine($"DEBUG: Inserted lines: {diff.Lines.Count(l => l.Type == ChangeType.Inserted)}");
+            
+            // Split lines for our own processing
+            var oldLines = oldText.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
+            var newLines = newText.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
+            
+            // First, identify modified lines (similar lines that were changed)
+            var deletedLines = diff.Lines.Where(l => l.Type == ChangeType.Deleted).ToList();
+            var insertedLines = diff.Lines.Where(l => l.Type == ChangeType.Inserted).ToList();
+            
+            // For each deleted line, try to find a similar inserted line
+            var modifiedPairs = new List<(DiffPiece Deleted, DiffPiece Inserted)>();
+            var remainingInserted = new List<DiffPiece>(insertedLines);
+            var remainingDeleted = new List<DiffPiece>(deletedLines);
+            
+            // Match lines that are more than 50% similar
+            foreach (var deleted in deletedLines)
+            {
+                var bestMatch = remainingInserted
+                    .Select(inserted => new { 
+                        Line = inserted, 
+                        Similarity = CalculateSimilarity(deleted.Text, inserted.Text) 
+                    })
+                    .Where(match => match.Similarity > 0.5)
+                    .OrderByDescending(match => match.Similarity)
+                    .FirstOrDefault();
+                
+                if (bestMatch != null)
+                {
+                    // Found a similar line - treat as modified
+                    Console.WriteLine($"DEBUG: Found modified line pair:");
+                    Console.WriteLine($"  Old: '{deleted.Text}'");
+                    Console.WriteLine($"  New: '{bestMatch.Line.Text}'");
+                    Console.WriteLine($"  Similarity: {bestMatch.Similarity:P1}");
+                    
+                    modifiedPairs.Add((deleted, bestMatch.Line));
+                    remainingInserted.Remove(bestMatch.Line);
+                    remainingDeleted.Remove(deleted);
+                }
+            }
+            
+            // Build the HTML
             var sb = new StringBuilder();
             sb.AppendLine("<div class=\"diff-container\">");
             
-            // Extract the lines for comparison
-            var oldLines = oldText.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
-            var newLines = newText.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
-                
+            // Old pane
             sb.AppendLine("<div class=\"diff-pane old-pane\">");
             int oldLineNum = 1;
+            int oldIndex = 0;
             
-            // Process old pane
-            foreach (var line in diff.Lines.Where(l => l.Type != ChangeType.Inserted))
+            foreach (var line in diff.Lines)
             {
-                var cssClass = line.Type == ChangeType.Deleted ? "deleted-line" : "unchanged-line";
-                
-                // If deleted, try to find corresponding line with small changes
-                if (line.Type == ChangeType.Deleted && line.Position.HasValue)
+                if (line.Type == ChangeType.Inserted)
                 {
-                    // Find potential matching line in new text
-                    var potentialMatches = diff.Lines
-                        .Where(l => l.Type == ChangeType.Inserted && l.Position.HasValue)
-                        .Select(l => new { Line = l, Similarity = CalculateSimilarity(line.Text, l.Text) })
-                        .Where(match => match.Similarity > 0.5) // Only consider if more than 50% similar
-                        .OrderByDescending(match => match.Similarity)
-                        .ToList();
-                    
-                    if (potentialMatches.Any())
+                    // For inserted lines in new pane, add a blank line in old pane
+                    var pair = modifiedPairs.FirstOrDefault(p => p.Inserted == line);
+                    if (pair.Deleted == null)
                     {
-                        var bestMatch = potentialMatches.First();
-                        string html = CustomInlineDiff(line.Text, bestMatch.Line.Text, true);
-                        sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{oldLineNum++}\">{html}</pre>");
-                        continue;
+                        // This is a pure insertion, add blank line
+                        sb.AppendLine($"<pre class=\"line unchanged-line empty-line\" data-line=\"{oldLineNum++}\"></pre>");
                     }
+                    continue;
                 }
                 
-                // Regular line
-                sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{oldLineNum++}\">{HtmlEncode(line.Text)}</pre>");
+                var cssClass = line.Type == ChangeType.Deleted ? "deleted-line" : "unchanged-line";
+                
+                // Check if this is part of a modified pair
+                var pair2 = modifiedPairs.FirstOrDefault(p => p.Deleted == line);
+                if (pair2.Inserted != null)
+                {
+                    // This is a modified line - do character level diff
+                    string html = ExplicitSimpleDiff(line.Text, pair2.Inserted.Text, true);
+                    sb.AppendLine($"<pre class=\"line modified-line\" data-line=\"{oldLineNum++}\">{html}</pre>");
+                }
+                else
+                {
+                    // Regular deleted or unchanged line
+                    sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{oldLineNum++}\">{HtmlEncode(line.Text)}</pre>");
+                }
+                
+                oldIndex++;
             }
             
             sb.AppendLine("</div>");
+            
+            // New pane
             sb.AppendLine("<div class=\"diff-pane new-pane\">");
             int newLineNum = 1;
+            int newIndex = 0;
             
-            // Process new pane
-            foreach (var line in diff.Lines.Where(l => l.Type != ChangeType.Deleted))
+            foreach (var line in diff.Lines)
             {
-                var cssClass = line.Type == ChangeType.Inserted ? "inserted-line" : "unchanged-line";
-                
-                // If inserted, try to find corresponding line with small changes
-                if (line.Type == ChangeType.Inserted && line.Position.HasValue)
+                if (line.Type == ChangeType.Deleted)
                 {
-                    // Find potential matching line in old text
-                    var potentialMatches = diff.Lines
-                        .Where(l => l.Type == ChangeType.Deleted && l.Position.HasValue)
-                        .Select(l => new { Line = l, Similarity = CalculateSimilarity(l.Text, line.Text) })
-                        .Where(match => match.Similarity > 0.5) // Only consider if more than 50% similar
-                        .OrderByDescending(match => match.Similarity)
-                        .ToList();
-                    
-                    if (potentialMatches.Any())
+                    // For deleted lines in old pane, add a blank line in new pane
+                    var pair3 = modifiedPairs.FirstOrDefault(p => p.Deleted == line);
+                    if (pair3.Inserted == null)
                     {
-                        var bestMatch = potentialMatches.First();
-                        string html = CustomInlineDiff(bestMatch.Line.Text, line.Text, false);
-                        sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{newLineNum++}\">{html}</pre>");
-                        continue;
+                        // This is a pure deletion, add blank line
+                        sb.AppendLine($"<pre class=\"line unchanged-line empty-line\" data-line=\"{newLineNum++}\"></pre>");
                     }
+                    continue;
                 }
                 
-                // Regular line
-                sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{newLineNum++}\">{HtmlEncode(line.Text)}</pre>");
+                var cssClass = line.Type == ChangeType.Inserted ? "inserted-line" : "unchanged-line";
+                
+                // Check if this is part of a modified pair
+                var pair4 = modifiedPairs.FirstOrDefault(p => p.Inserted == line);
+                if (pair4.Deleted != null)
+                {
+                    // This is a modified line - do character level diff
+                    string html = ExplicitSimpleDiff(pair4.Deleted.Text, line.Text, false);
+                    sb.AppendLine($"<pre class=\"line modified-line\" data-line=\"{newLineNum++}\">{html}</pre>");
+                }
+                else
+                {
+                    // Regular inserted or unchanged line
+                    sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{newLineNum++}\">{HtmlEncode(line.Text)}</pre>");
+                }
+                
+                newIndex++;
             }
-
+            
             sb.AppendLine("</div>");
             sb.AppendLine("</div>");
             return sb.ToString();
@@ -442,131 +511,6 @@ namespace UnityDiffTool
             }
             
             return d[s1.Length, s2.Length];
-        }
-        
-        // Custom inline diff that specifically highlights only the different parts
-        static string CustomInlineDiff(string oldText, string newText, bool isOldVersion)
-        {
-            // If they're identical, just return the text
-            if (oldText == newText)
-                return HtmlEncode(oldText);
-                
-            // If they're completely different or too short, just return the whole thing
-            if (oldText.Length < 5 || newText.Length < 5 || CalculateSimilarity(oldText, newText) < 0.3)
-            {
-                return isOldVersion ? HtmlEncode(oldText) : HtmlEncode(newText);
-            }
-            
-            // First, tokenize the strings (split into parts we can compare)
-            // For code, we'll split by common separators that maintain meaning
-            char[] separators = new[] { ' ', '\t', '(', ')', '{', '}', '[', ']', '.', ',', ';', ':', '=', '+', '-', '*', '/', '!', '?', '<', '>', '&', '|' };
-            
-            List<string> oldTokens = SplitPreservingSeparators(oldText, separators);
-            List<string> newTokens = SplitPreservingSeparators(newText, separators);
-            
-            // Now identify the longest common subsequence
-            int[,] matrix = new int[oldTokens.Count + 1, newTokens.Count + 1];
-            
-            // Fill the LCS matrix
-            for (int i = 1; i <= oldTokens.Count; i++)
-            {
-                for (int j = 1; j <= newTokens.Count; j++)
-                {
-                    if (oldTokens[i - 1] == newTokens[j - 1])
-                        matrix[i, j] = matrix[i - 1, j - 1] + 1;
-                    else
-                        matrix[i, j] = Math.Max(matrix[i, j - 1], matrix[i - 1, j]);
-                }
-            }
-            
-            // Use the matrix to reconstruct the diff
-            StringBuilder result = new StringBuilder();
-            int oldIdx = oldTokens.Count;
-            int newIdx = newTokens.Count;
-            
-            // Lists to store the operations in reverse order (we'll reverse them at the end)
-            List<(string text, bool highlight)> diffOperations = new List<(string, bool)>();
-            
-            while (oldIdx > 0 || newIdx > 0)
-            {
-                // Both sequences have a token left and they match
-                if (oldIdx > 0 && newIdx > 0 && oldTokens[oldIdx - 1] == newTokens[newIdx - 1])
-                {
-                    diffOperations.Add((oldTokens[oldIdx - 1], false));  // Common part, no highlight
-                    oldIdx--;
-                    newIdx--;
-                }
-                // Choose the direction with larger LCS value
-                else if (newIdx > 0 && (oldIdx == 0 || matrix[oldIdx, newIdx - 1] >= matrix[oldIdx - 1, newIdx]))
-                {
-                    // Skip if looking at old version
-                    if (!isOldVersion)
-                    {
-                        diffOperations.Add((newTokens[newIdx - 1], true));  // Added part
-                    }
-                    newIdx--;
-                }
-                else if (oldIdx > 0 && (newIdx == 0 || matrix[oldIdx, newIdx - 1] < matrix[oldIdx - 1, newIdx]))
-                {
-                    // Skip if looking at new version
-                    if (isOldVersion)
-                    {
-                        diffOperations.Add((oldTokens[oldIdx - 1], true));  // Removed part
-                    }
-                    oldIdx--;
-                }
-            }
-            
-            // Reverse the operations to get them in correct order
-            diffOperations.Reverse();
-            
-            // Build the final HTML
-            foreach (var op in diffOperations)
-            {
-                if (op.highlight)
-                {
-                    string cssClass = isOldVersion ? "deleted" : "inserted";
-                    result.Append($"<span class=\"{cssClass}\">{HtmlEncode(op.text)}</span>");
-                }
-                else
-                {
-                    result.Append(HtmlEncode(op.text));
-                }
-            }
-            
-            return result.ToString();
-        }
-        
-        // Helper to split text while preserving separators
-        static List<string> SplitPreservingSeparators(string text, char[] separators)
-        {
-            List<string> tokens = new List<string>();
-            int lastIndex = 0;
-            
-            for (int i = 0; i < text.Length; i++)
-            {
-                if (separators.Contains(text[i]))
-                {
-                    // Add the part before this separator
-                    if (i > lastIndex)
-                    {
-                        tokens.Add(text.Substring(lastIndex, i - lastIndex));
-                    }
-                    
-                    // Add the separator itself as a token
-                    tokens.Add(text[i].ToString());
-                    
-                    lastIndex = i + 1;
-                }
-            }
-            
-            // Add any remaining part
-            if (lastIndex < text.Length)
-            {
-                tokens.Add(text.Substring(lastIndex));
-            }
-            
-            return tokens;
         }
 
         static string HtmlEncode(string? text)
@@ -980,6 +924,161 @@ public void TestPatchMethod()
             string diffHtml = GenerateDiffHtml(oldCode, newCode);
             
             return ("test-diff", "Test Diff Example", diffHtml, HtmlEncode(oldCode), HtmlEncode(newCode), HtmlEncode(patchCode));
+        }
+
+        // Test method to verify inline diffing
+        static void TestInlineDiff()
+        {
+            Console.WriteLine("======= TESTING INLINE DIFF =======");
+            
+            // Test case 1: Simple value change
+            string oldLine = "    int value = 42;";
+            string newLine = "    int value = 100;";
+            
+            // Direct test
+            Console.WriteLine("\nTest case 1: Simple value change");
+            string result1 = ExplicitSimpleDiff(oldLine, newLine, true);
+            Console.WriteLine($"HTML Result: {result1}");
+            
+            // Test case 2: Multiple value changes
+            string oldLine2 = "    int value = 42, count = 10;";
+            string newLine2 = "    int value = 100, count = 20;";
+            
+            Console.WriteLine("\nTest case 2: Multiple value changes");
+            string result2 = ExplicitSimpleDiff(oldLine2, newLine2, true);
+            Console.WriteLine($"HTML Result: {result2}");
+            
+            // Test the HTML generation
+            Console.WriteLine("\nTesting full diff HTML generation");
+            string html = GenerateDiffHtml(
+                "public void TestMethod()\n{\n    int value = 42;\n    Console.WriteLine(value);\n}", 
+                "public void TestMethod()\n{\n    int value = 100;\n    Console.WriteLine(value);\n}"
+            );
+            
+            Console.WriteLine($"Full HTML Result:\n{html}");
+            Console.WriteLine("======= END TESTING INLINE DIFF =======");
+        }
+
+        // Very direct, simple diffing that focuses on literal values
+        static string ExplicitSimpleDiff(string oldLine, string newLine, bool isOldVersion)
+        {
+            // Debug directly to console in case Log method isn't working
+            Console.WriteLine($"DEBUG ExplicitSimpleDiff: oldLine='{oldLine}', newLine='{newLine}', isOldVersion={isOldVersion}");
+            
+            // Log inputs for debugging
+            Log($"ExplicitSimpleDiff called with:");
+            Log($"  oldLine: '{oldLine}'");
+            Log($"  newLine: '{newLine}'");
+            Log($"  isOldVersion: {isOldVersion}");
+            
+            // Split by common code delimiters
+            string[] delimiters = new[] { " ", "\t", "(", ")", "[", "]", "{", "}", ";", ",", ".", ":", "=", "+", "-", "*", "/", "<", ">", "&&", "||" };
+            
+            // Manual pattern for finding literals like "42", "100", etc.
+            var numberPattern = @"\b\d+\b";
+            var stringPattern = @"""[^""]*""";
+            var literalPattern = $"({numberPattern}|{stringPattern})";
+            
+            var oldMatches = Regex.Matches(oldLine, literalPattern);
+            var newMatches = Regex.Matches(newLine, literalPattern);
+            
+            // Log regex matches
+            Log($"  Found {oldMatches.Count} literals in oldLine:");
+            for (int i = 0; i < oldMatches.Count; i++)
+            {
+                Log($"    [{i}] '{oldMatches[i].Value}' at position {oldMatches[i].Index}");
+            }
+            
+            Log($"  Found {newMatches.Count} literals in newLine:");
+            for (int i = 0; i < newMatches.Count; i++)
+            {
+                Log($"    [{i}] '{newMatches[i].Value}' at position {newMatches[i].Index}");
+            }
+            
+            // If we can't find literals, just return encoded text
+            if ((oldMatches.Count == 0 && newMatches.Count == 0) || oldLine == newLine)
+            {
+                Log("  No literals found or lines are identical - returning full line");
+                return HtmlEncode(isOldVersion ? oldLine : newLine);
+            }
+            
+            // Look for cases where the only difference is a single number/string literal
+            if (oldMatches.Count == newMatches.Count)
+            {
+                List<int> diffIndices = new List<int>();
+                
+                for (int i = 0; i < oldMatches.Count; i++)
+                {
+                    if (oldMatches[i].Value != newMatches[i].Value)
+                    {
+                        diffIndices.Add(i);
+                        Log($"    Difference found at index {i}: '{oldMatches[i].Value}' vs '{newMatches[i].Value}'");
+                    }
+                }
+                
+                // Only one literal different - ideal case for inline diff
+                if (diffIndices.Count == 1)
+                {
+                    int idx = diffIndices[0];
+                    string line = isOldVersion ? oldLine : newLine;
+                    var match = isOldVersion ? oldMatches[idx] : newMatches[idx];
+                    
+                    string before = line.Substring(0, match.Index);
+                    string value = match.Value;
+                    string after = line.Substring(match.Index + match.Length);
+                    
+                    string cssClass = isOldVersion ? "deleted" : "inserted";
+                    Log($"  Single literal difference found - returning with highlighted '{value}'");
+                    return $"{HtmlEncode(before)}<span class=\"{cssClass}\">{HtmlEncode(value)}</span>{HtmlEncode(after)}";
+                }
+                else 
+                {
+                    Log($"  Found {diffIndices.Count} differences - not a single literal change");
+                }
+            }
+            
+            // Special case for "value = 42" -> "value = 100"
+            var valuePatternOld = Regex.Match(oldLine, @"(\w+\s*=\s*)(\d+|\""[^""]*\"")(.*)");
+            var valuePatternNew = Regex.Match(newLine, @"(\w+\s*=\s*)(\d+|\""[^""]*\"")(.*)");
+            
+            Log("  Checking for assignment pattern");
+            Log($"  Old match success: {valuePatternOld.Success}, Groups: {valuePatternOld.Groups.Count}");
+            if (valuePatternOld.Success)
+            {
+                for (int i = 0; i < valuePatternOld.Groups.Count; i++)
+                {
+                    Log($"    Group[{i}]: '{valuePatternOld.Groups[i].Value}'");
+                }
+            }
+            
+            Log($"  New match success: {valuePatternNew.Success}, Groups: {valuePatternNew.Groups.Count}");
+            if (valuePatternNew.Success)
+            {
+                for (int i = 0; i < valuePatternNew.Groups.Count; i++)
+                {
+                    Log($"    Group[{i}]: '{valuePatternNew.Groups[i].Value}'");
+                }
+            }
+            
+            if (valuePatternOld.Success && valuePatternNew.Success && 
+                valuePatternOld.Groups[1].Value == valuePatternNew.Groups[1].Value &&
+                valuePatternOld.Groups[3].Value == valuePatternNew.Groups[3].Value)
+            {
+                // This is the exact case we're looking for - assignment with different values
+                Log("  Found exact assignment pattern with different values!");
+                if (isOldVersion)
+                {
+                    return $"{HtmlEncode(valuePatternOld.Groups[1].Value)}<span class=\"deleted\">{HtmlEncode(valuePatternOld.Groups[2].Value)}</span>{HtmlEncode(valuePatternOld.Groups[3].Value)}";
+                }
+                else
+                {
+                    return $"{HtmlEncode(valuePatternNew.Groups[1].Value)}<span class=\"inserted\">{HtmlEncode(valuePatternNew.Groups[2].Value)}</span>{HtmlEncode(valuePatternNew.Groups[3].Value)}";
+                }
+            }
+            
+            // Fallback - return the whole line
+            Log("  No special case found - returning whole line");
+            return HtmlEncode(isOldVersion ? oldLine : newLine);
         }
     }
 }
