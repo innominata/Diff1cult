@@ -9,6 +9,7 @@ using DiffPlex.DiffBuilder.Model;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
+using DiffPlex.Chunkers;
 
 namespace UnityDiffTool
 {
@@ -62,6 +63,9 @@ namespace UnityDiffTool
 
             Log("Comparing patched methods...");
             var reportItems = AnalyzePatchedMethods(patchMethods, oldClassMap, newClassMap, modSrcFolder);
+
+            // Add a test diff to demonstrate different highlighting styles
+            reportItems.Insert(0, GenerateTestDiff());
 
             if (reportItems.Count == 0)
             {
@@ -213,7 +217,7 @@ namespace UnityDiffTool
             {
                 Log($"Processing patch: {patchFile}:{patchMethod} -> {targetClass}:{targetMethod}");
 
-                string fullTargetClass = ResolveClassName(targetClass, oldClassMap, "old");
+                string? fullTargetClass = ResolveClassName(targetClass, oldClassMap, "old");
                 if (fullTargetClass == null) continue;
 
                 if (!newClassMap.ContainsKey(fullTargetClass))
@@ -271,7 +275,7 @@ namespace UnityDiffTool
             return reportItems;
         }
 
-        static string ResolveClassName(string targetClass, Dictionary<string, string> classMap, string sourceName)
+        static string? ResolveClassName(string targetClass, Dictionary<string, string> classMap, string sourceName)
         {
             if (classMap.ContainsKey(targetClass))
             {
@@ -296,7 +300,7 @@ namespace UnityDiffTool
             return null;
         }
 
-        static MethodDeclarationSyntax FindMethod(SyntaxTree tree, string methodName)
+        static MethodDeclarationSyntax? FindMethod(SyntaxTree tree, string methodName)
         {
             return tree.GetRoot().DescendantNodes()
                 .OfType<MethodDeclarationSyntax>()
@@ -311,174 +315,264 @@ namespace UnityDiffTool
                 .FirstOrDefault(m => m.Identifier.Text == methodName);
             return method?.ToString() ?? "// Patch method not found";
         }
-        static string FormatLineForOldPane(DiffPiece line)
-        {
-            if (line.Type == ChangeType.Deleted)
-            {
-                return $"<span class=\"deleted\">{HtmlEncode(line.Text)}</span>";
-            }
-            else if (line.Type == ChangeType.Modified)
-            {
-                var sb = new StringBuilder();
-                foreach (var piece in line.SubPieces)
-                {
-                    if (piece.Type == ChangeType.Unchanged || piece.Type == ChangeType.Deleted)
-                    {
-                        string text = HtmlEncode(piece.Text);
-                        if (piece.Type == ChangeType.Deleted)
-                        {
-                            sb.Append($"<span class=\"deleted\">{text}</span>");
-                        }
-                        else
-                        {
-                            sb.Append(text);
-                        }
-                    }
-                }
-                return sb.ToString();
-            }
-            else if (line.Type == ChangeType.Unchanged)
-            {
-                return HtmlEncode(line.Text);
-            }
-            else // Inserted
-            {
-                return "";
-            }
-        }
 
-        static string FormatLineForNewPane(DiffPiece line)
-        {
-            if (line.Type == ChangeType.Inserted)
-            {
-                return $"<span class=\"inserted\">{HtmlEncode(line.Text)}</span>";
-            }
-            else if (line.Type == ChangeType.Modified)
-            {
-                var sb = new StringBuilder();
-                foreach (var piece in line.SubPieces)
-                {
-                    if (piece.Type == ChangeType.Unchanged || piece.Type == ChangeType.Inserted)
-                    {
-                        string text = HtmlEncode(piece.Text);
-                        if (piece.Type == ChangeType.Inserted)
-                        {
-                            sb.Append($"<span class=\"inserted\">{text}</span>");
-                        }
-                        else
-                        {
-                            sb.Append(text);
-                        }
-                    }
-                }
-                return sb.ToString();
-            }
-            else if (line.Type == ChangeType.Unchanged)
-            {
-                return HtmlEncode(line.Text);
-            }
-            else // Deleted
-            {
-                return "";
-            }
-        }
         static string GenerateDiffHtml(string oldText, string newText)
         {
+            // Create a line-level differ
             var differ = new Differ();
             var builder = new InlineDiffBuilder(differ);
-            var diff = builder.BuildDiffModel(oldText, newText);
+            var diff = builder.BuildDiffModel(
+                oldText,
+                newText,
+                ignoreWhitespace: false,
+                ignoreCase: false,
+                new LineEndingsPreservingChunker()
+            );
 
             var sb = new StringBuilder();
             sb.AppendLine("<div class=\"diff-container\">");
+            
+            // Extract the lines for comparison
+            var oldLines = oldText.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
+            var newLines = newText.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
+                
             sb.AppendLine("<div class=\"diff-pane old-pane\">");
             int oldLineNum = 1;
-
-            foreach (var line in diff.Lines)
+            
+            // Process old pane
+            foreach (var line in diff.Lines.Where(l => l.Type != ChangeType.Inserted))
             {
-                string formattedContent = FormatLineForOldPane(line);
-                string className = line.Type == ChangeType.Deleted ? "deleted-line" :
-                    line.Type == ChangeType.Modified ? "modified-line" :
-                    "unchanged";
-                sb.AppendLine($"<pre class=\"line {className}\" data-line=\"{oldLineNum}\">{oldLineNum} {formattedContent}</pre>");
-                oldLineNum++;
+                var cssClass = line.Type == ChangeType.Deleted ? "deleted-line" : "unchanged-line";
+                
+                // If deleted, try to find corresponding line with small changes
+                if (line.Type == ChangeType.Deleted && line.Position.HasValue)
+                {
+                    // Find potential matching line in new text
+                    var potentialMatches = diff.Lines
+                        .Where(l => l.Type == ChangeType.Inserted && l.Position.HasValue)
+                        .Select(l => new { Line = l, Similarity = CalculateSimilarity(line.Text, l.Text) })
+                        .Where(match => match.Similarity > 0.5) // Only consider if more than 50% similar
+                        .OrderByDescending(match => match.Similarity)
+                        .ToList();
+                    
+                    if (potentialMatches.Any())
+                    {
+                        var bestMatch = potentialMatches.First();
+                        string html = CustomInlineDiff(line.Text, bestMatch.Line.Text, true);
+                        sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{oldLineNum++}\">{html}</pre>");
+                        continue;
+                    }
+                }
+                
+                // Regular line
+                sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{oldLineNum++}\">{HtmlEncode(line.Text)}</pre>");
             }
-
+            
             sb.AppendLine("</div>");
-            sb.AppendLine("<div class=\"resizer diff-resizer\"></div>");
             sb.AppendLine("<div class=\"diff-pane new-pane\">");
             int newLineNum = 1;
-
-            foreach (var line in diff.Lines)
+            
+            // Process new pane
+            foreach (var line in diff.Lines.Where(l => l.Type != ChangeType.Deleted))
             {
-                string formattedContent = FormatLineForNewPane(line);
-                string className = line.Type == ChangeType.Inserted ? "inserted-line" :
-                    line.Type == ChangeType.Modified ? "modified-line" :
-                    "unchanged";
-                sb.AppendLine($"<pre class=\"line {className}\" data-line=\"{newLineNum}\">{newLineNum} {formattedContent}</pre>");
-                newLineNum++;
+                var cssClass = line.Type == ChangeType.Inserted ? "inserted-line" : "unchanged-line";
+                
+                // If inserted, try to find corresponding line with small changes
+                if (line.Type == ChangeType.Inserted && line.Position.HasValue)
+                {
+                    // Find potential matching line in old text
+                    var potentialMatches = diff.Lines
+                        .Where(l => l.Type == ChangeType.Deleted && l.Position.HasValue)
+                        .Select(l => new { Line = l, Similarity = CalculateSimilarity(l.Text, line.Text) })
+                        .Where(match => match.Similarity > 0.5) // Only consider if more than 50% similar
+                        .OrderByDescending(match => match.Similarity)
+                        .ToList();
+                    
+                    if (potentialMatches.Any())
+                    {
+                        var bestMatch = potentialMatches.First();
+                        string html = CustomInlineDiff(bestMatch.Line.Text, line.Text, false);
+                        sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{newLineNum++}\">{html}</pre>");
+                        continue;
+                    }
+                }
+                
+                // Regular line
+                sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{newLineNum++}\">{HtmlEncode(line.Text)}</pre>");
             }
 
             sb.AppendLine("</div>");
             sb.AppendLine("</div>");
             return sb.ToString();
         }
-        static string FormatDiffLine(string lineContent, IReadOnlyList<DiffPiece> subPieces)
+        
+        // Calculate similarity between two strings (simple Levenshtein distance based)
+        static double CalculateSimilarity(string s1, string s2)
         {
-            if (subPieces == null || subPieces.Count == 0)
+            if (string.IsNullOrEmpty(s1) || string.IsNullOrEmpty(s2))
+                return 0;
+            
+            int maxLength = Math.Max(s1.Length, s2.Length);
+            if (maxLength == 0) return 1.0;
+            
+            return (1.0 - ((double)LevenshteinDistance(s1, s2) / maxLength));
+        }
+        
+        // Compute Levenshtein distance
+        static int LevenshteinDistance(string s1, string s2)
+        {
+            int[,] d = new int[s1.Length + 1, s2.Length + 1];
+            
+            for (int i = 0; i <= s1.Length; i++)
+                d[i, 0] = i;
+            
+            for (int j = 0; j <= s2.Length; j++)
+                d[0, j] = j;
+            
+            for (int j = 1; j <= s2.Length; j++)
             {
-                return HtmlEncode(lineContent) + "\n"; // Ensure newline is added
-            }
-
-            var result = new StringBuilder();
-            int lastPos = 0;
-
-            foreach (var piece in subPieces)
-            {
-                // Handle nullable Position with null check and explicit cast
-                int position = piece.Position.HasValue ? piece.Position.Value : 0;
-
-                // Ensure we don't go out of bounds
-                if (position < 0 || position > lineContent.Length)
+                for (int i = 1; i <= s1.Length; i++)
                 {
-                    position = 0; // Default to 0 if invalid
+                    int cost = (s1[i - 1] == s2[j - 1]) ? 0 : 1;
+                    
+                    d[i, j] = Math.Min(
+                        Math.Min(d[i - 1, j] + 1, d[i, j - 1] + 1),
+                        d[i - 1, j - 1] + cost);
                 }
-
-                // Append unchanged text before the change
-                if (position > lastPos)
-                {
-                    result.Append(HtmlEncode(lineContent.Substring(lastPos, position - lastPos)));
-                }
-
-                // Wrap changed text in a span with appropriate class based on piece type
-                string className = piece.Type switch
-                {
-                    ChangeType.Deleted => "deleted",
-                    ChangeType.Inserted => "inserted",
-                    ChangeType.Modified => "modified",
-                    _ => "unchanged"
-                };
-                result.Append($"<span class=\"{className}\">{HtmlEncode(piece.Text ?? "")}</span>");
-
-                // Handle nullable Position for lastPos update with null check and explicit cast
-                lastPos = position + (piece.Text?.Length ?? 0);
             }
-
-            // Append any remaining unchanged text, ensuring we don't exceed lineContent length
-            if (lastPos < lineContent.Length)
+            
+            return d[s1.Length, s2.Length];
+        }
+        
+        // Custom inline diff that specifically highlights only the different parts
+        static string CustomInlineDiff(string oldText, string newText, bool isOldVersion)
+        {
+            // If they're identical, just return the text
+            if (oldText == newText)
+                return HtmlEncode(oldText);
+                
+            // If they're completely different or too short, just return the whole thing
+            if (oldText.Length < 5 || newText.Length < 5 || CalculateSimilarity(oldText, newText) < 0.3)
             {
-                result.Append(HtmlEncode(lineContent.Substring(lastPos)));
+                return isOldVersion ? HtmlEncode(oldText) : HtmlEncode(newText);
             }
-
-            // Ensure each line ends with a newline for proper formatting
-            result.Append("\n");
+            
+            // First, tokenize the strings (split into parts we can compare)
+            // For code, we'll split by common separators that maintain meaning
+            char[] separators = new[] { ' ', '\t', '(', ')', '{', '}', '[', ']', '.', ',', ';', ':', '=', '+', '-', '*', '/', '!', '?', '<', '>', '&', '|' };
+            
+            List<string> oldTokens = SplitPreservingSeparators(oldText, separators);
+            List<string> newTokens = SplitPreservingSeparators(newText, separators);
+            
+            // Now identify the longest common subsequence
+            int[,] matrix = new int[oldTokens.Count + 1, newTokens.Count + 1];
+            
+            // Fill the LCS matrix
+            for (int i = 1; i <= oldTokens.Count; i++)
+            {
+                for (int j = 1; j <= newTokens.Count; j++)
+                {
+                    if (oldTokens[i - 1] == newTokens[j - 1])
+                        matrix[i, j] = matrix[i - 1, j - 1] + 1;
+                    else
+                        matrix[i, j] = Math.Max(matrix[i, j - 1], matrix[i - 1, j]);
+                }
+            }
+            
+            // Use the matrix to reconstruct the diff
+            StringBuilder result = new StringBuilder();
+            int oldIdx = oldTokens.Count;
+            int newIdx = newTokens.Count;
+            
+            // Lists to store the operations in reverse order (we'll reverse them at the end)
+            List<(string text, bool highlight)> diffOperations = new List<(string, bool)>();
+            
+            while (oldIdx > 0 || newIdx > 0)
+            {
+                // Both sequences have a token left and they match
+                if (oldIdx > 0 && newIdx > 0 && oldTokens[oldIdx - 1] == newTokens[newIdx - 1])
+                {
+                    diffOperations.Add((oldTokens[oldIdx - 1], false));  // Common part, no highlight
+                    oldIdx--;
+                    newIdx--;
+                }
+                // Choose the direction with larger LCS value
+                else if (newIdx > 0 && (oldIdx == 0 || matrix[oldIdx, newIdx - 1] >= matrix[oldIdx - 1, newIdx]))
+                {
+                    // Skip if looking at old version
+                    if (!isOldVersion)
+                    {
+                        diffOperations.Add((newTokens[newIdx - 1], true));  // Added part
+                    }
+                    newIdx--;
+                }
+                else if (oldIdx > 0 && (newIdx == 0 || matrix[oldIdx, newIdx - 1] < matrix[oldIdx - 1, newIdx]))
+                {
+                    // Skip if looking at new version
+                    if (isOldVersion)
+                    {
+                        diffOperations.Add((oldTokens[oldIdx - 1], true));  // Removed part
+                    }
+                    oldIdx--;
+                }
+            }
+            
+            // Reverse the operations to get them in correct order
+            diffOperations.Reverse();
+            
+            // Build the final HTML
+            foreach (var op in diffOperations)
+            {
+                if (op.highlight)
+                {
+                    string cssClass = isOldVersion ? "deleted" : "inserted";
+                    result.Append($"<span class=\"{cssClass}\">{HtmlEncode(op.text)}</span>");
+                }
+                else
+                {
+                    result.Append(HtmlEncode(op.text));
+                }
+            }
+            
             return result.ToString();
+        }
+        
+        // Helper to split text while preserving separators
+        static List<string> SplitPreservingSeparators(string text, char[] separators)
+        {
+            List<string> tokens = new List<string>();
+            int lastIndex = 0;
+            
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (separators.Contains(text[i]))
+                {
+                    // Add the part before this separator
+                    if (i > lastIndex)
+                    {
+                        tokens.Add(text.Substring(lastIndex, i - lastIndex));
+                    }
+                    
+                    // Add the separator itself as a token
+                    tokens.Add(text[i].ToString());
+                    
+                    lastIndex = i + 1;
+                }
+            }
+            
+            // Add any remaining part
+            if (lastIndex < text.Length)
+            {
+                tokens.Add(text.Substring(lastIndex));
+            }
+            
+            return tokens;
         }
 
         static string HtmlEncode(string? text)
         {
             return text == null ? "" : System.Net.WebUtility.HtmlEncode(text);
         }
-
 
         static void GenerateHtmlReport(int totalPatches, List<(string Id, string Label, string DiffHtml, string OldSrc, string NewSrc, string PatchSrc)> items)
         {
@@ -829,6 +923,63 @@ namespace UnityDiffTool
             sb.AppendLine("</html>");
 
             File.WriteAllText("diff_report.html", sb.ToString());
+        }
+
+        // New method to generate a test diff
+        static (string Id, string Label, string DiffHtml, string OldSrc, string NewSrc, string PatchSrc) GenerateTestDiff()
+        {
+            string oldCode = @"public void TestMethod() 
+{
+    // This line will have inline changes
+    int value = 42;
+    string name = ""oldName"";
+    
+    // This line will be completely removed
+    Console.WriteLine(""This line is going to be deleted"");
+    
+    // This line will stay the same
+    bool isEnabled = true;
+    
+    // Common code with some changes
+    if (isEnabled) 
+    {
+        DoSomething(""old parameter"");
+    }
+}";
+
+            string newCode = @"public void TestMethod() 
+{
+    // This line will have inline changes
+    int value = 100;
+    string name = ""newName"";
+    
+    // This line will be completely added
+    Console.WriteLine(""This is a brand new line"");
+    
+    // This line will stay the same
+    bool isEnabled = true;
+    
+    // Common code with some changes
+    if (isEnabled) 
+    {
+        DoSomething(""new parameter"");
+    }
+}";
+
+            string patchCode = @"[HarmonyPatch]
+public void TestPatchMethod()
+{
+    // This is just a sample patch method
+    if (!__state)
+        return;
+        
+    // Do patch things here
+    __result = true;
+}";
+
+            string diffHtml = GenerateDiffHtml(oldCode, newCode);
+            
+            return ("test-diff", "Test Diff Example", diffHtml, HtmlEncode(oldCode), HtmlEncode(newCode), HtmlEncode(patchCode));
         }
     }
 }
