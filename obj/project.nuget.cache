@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "dgSpecHash": "9u8lDKCHUWM=",
+  "success": true,
+  "projectFilePath": "C:\\code\\Diff1cult\\Diff1cult\\Diff1cult.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\inno\\.nuget\\packages\\diffplex\\1.7.2\\diffplex.1.7.2.nupkg.sha512",
+    "C:\\Users\\inno\\.nuget\\packages\\microsoft.codeanalysis.analyzers\\3.3.4\\microsoft.codeanalysis.analyzers.3.3.4.nupkg.sha512",
+    "C:\\Users\\inno\\.nuget\\packages\\microsoft.codeanalysis.common\\4.8.0\\microsoft.codeanalysis.common.4.8.0.nupkg.sha512",
+    "C:\\Users\\inno\\.nuget\\packages\\microsoft.codeanalysis.csharp\\4.8.0\\microsoft.codeanalysis.csharp.4.8.0.nupkg.sha512",
+    "C:\\Users\\inno\\.nuget\\packages\\system.collections.immutable\\7.0.0\\system.collections.immutable.7.0.0.nupkg.sha512",
+    "C:\\Users\\inno\\.nuget\\packages\\system.reflection.metadata\\7.0.0\\system.reflection.metadata.7.0.0.nupkg.sha512",
+    "C:\\Users\\inno\\.nuget\\packages\\system.runtime.compilerservices.unsafe\\6.0.0\\system.runtime.compilerservices.unsafe.6.0.0.nupkg.sha512"
+  ],
+  "logs": []
+}
