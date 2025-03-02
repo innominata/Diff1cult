@@ -1,0 +1,817 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Diff1cult - Relevant Source Change Report</title>
+<style>
+
+                :root {
+                    --primary: #2c3e50;
+                    --secondary: #34495e;
+                    --highlight: #3498db;
+                    --text: #ecf0f1;
+                    --deleted: #e74c3c;
+                    --inserted: #2ecc71;
+                    --modified: #f1c40f;
+                    --line-num: #7f8c8d;
+                    --gutter-bg: #1e272e;
+                    --line-hover: rgba(52, 152, 219, 0.1);
+                }
+                body {
+                    font-family: 'Segoe UI', Arial, sans-serif;
+                    margin: 0;
+                    padding: 0;
+                    background: var(--primary);
+                    color: var(--text);
+                    display: flex;
+                    flex-direction: column;
+                    height: 100vh;
+                }
+                #header {
+                    background: var(--secondary);
+                    padding: 15px 20px;
+                    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+                    z-index: 10;
+                }
+                h1, h2, h3, h4 {
+                    margin: 0;
+                    font-weight: 600;
+                }
+                h1 {
+                    font-size: 1.5rem;
+                    color: var(--text);
+                }
+                h2 {
+                    font-size: 1.3rem;
+                    color: var(--text);
+                    margin-bottom: 10px;
+                }
+                #content {
+                    flex: 1;
+                    display: flex;
+                    overflow: hidden;
+                }
+                #left-panel {
+                    width: 25%;
+                    min-width: 200px;
+                    background: var(--secondary);
+                    overflow-y: auto;
+                    padding: 15px 0;
+                    border-right: 1px solid rgba(0,0,0,0.1);
+                }
+                #left-panel ul {
+                    list-style: none;
+                    padding: 0;
+                    margin: 0;
+                }
+                #left-panel li {
+                    padding: 10px 15px;
+                    cursor: pointer;
+                    border-left: 3px solid transparent;
+                }
+                #left-panel li:hover {
+                    background: rgba(0,0,0,0.1);
+                }
+                #left-panel li.active {
+                    background: rgba(0,0,0,0.15);
+                    border-left-color: var(--highlight);
+                }
+                #resizer {
+                    width: 6px;
+                    background: var(--secondary);
+                    cursor: col-resize;
+                    position: relative;
+                    z-index: 10;
+                }
+                #right-panel {
+                    flex: 1;
+                    display: flex;
+                    flex-direction: column;
+                    overflow: hidden;
+                }
+                #tabs {
+                    display: flex;
+                    background: var(--secondary);
+                    border-bottom: 1px solid rgba(0,0,0,0.1);
+                }
+                .tab-button {
+                    padding: 12px 20px;
+                    cursor: pointer;
+                    background: none;
+                    border: none;
+                    color: var(--text);
+                    font-weight: 500;
+                    border-bottom: 2px solid transparent;
+                    opacity: 0.7;
+                    transition: all 0.2s ease;
+                }
+                .tab-button:hover {
+                    opacity: 0.9;
+                }
+                .tab-button.active {
+                    opacity: 1;
+                    border-bottom-color: var(--highlight);
+                }
+                .tab-content {
+                    display: none;
+                    flex: 1;
+                    overflow: auto;
+                    padding: 20px;
+                }
+                .tab-content.active {
+                    display: block;
+                }
+                pre {
+                    margin: 0;
+                    font-family: 'Cascadia Code', 'Consolas', monospace;
+                    font-size: 14px;
+                    line-height: 1.4;
+                    white-space: pre;
+                    tab-size: 4;
+                    padding: 5px 0;
+                }
+                code {
+                    font-family: 'Cascadia Code', 'Consolas', monospace;
+                    font-size: 14px;
+                    white-space: pre;
+                    tab-size: 4;
+                }
+                .source-code {
+                    background: #272a3a;
+                    padding: 10px;
+                    overflow-x: auto;
+                    border-radius: 0 0 5px 5px;
+                }
+                .diff-container {
+                    font-family: 'Cascadia Code', 'Consolas', monospace;
+                    font-size: 14px;
+                    line-height: 1.4;
+                    overflow-x: auto;
+                    background: #272a3a;
+                    border-radius: 4px;
+                    display: flex;
+                    height: calc(100vh - 150px);
+                    position: relative;
+                }
+                /* Two-pane diff view style */
+                .old-pane, .new-pane {
+                    flex: 1;
+                    overflow: auto;
+                    background: #272a3a;
+                    width: 50%;
+                }
+                .diff-resizer {
+                    width: 6px;
+                    background: rgba(127, 140, 141, 0.3);
+                    cursor: col-resize;
+                    position: absolute;
+                    left: 50%;
+                    top: 0;
+                    bottom: 0;
+                    z-index: 10;
+                }
+                .diff-line {
+                    display: flex;
+                    white-space: pre;
+                }
+                .diff-line:hover {
+                    background-color: var(--line-hover);
+                }
+                .line-numbers {
+                    user-select: none;
+                    text-align: right;
+                    color: var(--line-num);
+                    padding: 0 10px;
+                    min-width: 100px;
+                    background-color: var(--gutter-bg);
+                    border-right: 1px solid rgba(127, 140, 141, 0.2);
+                    font-variant-numeric: tabular-nums;
+                    white-space: pre;
+                }
+                .old-line-num, .new-line-num {
+                    display: inline-block;
+                    width: 40px;
+                    text-align: right;
+                    padding-right: 5px;
+                }
+                .line-content {
+                    padding-left: 15px;
+                    white-space: pre;
+                    width: 100%;
+                    overflow-x: visible;
+                }
+                .deleted-line {
+                    background-color: rgba(231, 76, 60, 0.12);
+                }
+                .deleted-line .line-content {
+                    background-color: rgba(231, 76, 60, 0.12);
+                }
+                .inserted-line {
+                    background-color: rgba(46, 204, 113, 0.12);
+                }
+                .inserted-line .line-content {
+                    background-color: rgba(46, 204, 113, 0.12);
+                }
+                .modified-line {
+                    background-color: rgba(241, 196, 15, 0.12);
+                }
+                .modified-line.deleted-part .line-content {
+                    background-color: rgba(231, 76, 60, 0.12);
+                }
+                .modified-line.inserted-part .line-content {
+                    background-color: rgba(46, 204, 113, 0.12);
+                }
+                .unchanged-line {
+                    color: var(--text);
+                }
+                .deleted {
+                    background-color: rgba(231, 76, 60, 0.3);
+                    text-decoration: none;
+                    border-radius: 2px;
+                }
+                .inserted {
+                    background-color: rgba(46, 204, 113, 0.3);
+                    text-decoration: none;
+                    border-radius: 2px;
+                }
+                .empty-line {
+                    background: repeating-linear-gradient(
+                        45deg,
+                        rgba(127, 140, 141, 0.1),
+                        rgba(127, 140, 141, 0.1) 10px,
+                        rgba(127, 140, 141, 0.03) 10px,
+                        rgba(127, 140, 141, 0.03) 20px
+                    );
+                }
+                /* Log styles */
+                #log-toggle {
+                    padding: 5px 10px;
+                    background: var(--highlight);
+                    color: white;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    margin-top: 10px;
+                }
+                #log-content {
+                    display: none;
+                    margin-top: 10px;
+                    max-height: 300px;
+                    overflow: auto;
+                    background: rgba(0,0,0,0.1);
+                    padding: 10px;
+                    border-radius: 4px;
+                }
+            
+</style>
+</head>
+<body>
+<div id="header">
+<h1>Diff1cult - Relevant Source Change Report</h1>
+<div id="summary">Found 0 Patched Methods. Changes Detected in 1.</div>
+<button id="log-toggle">Show Log</button>
+<div id="log-content"><pre>Analyzing mod source code...
+Found 0 patch methods:
+Mapping game source files...
+Mapped 2738 types in old source (d:\src).
+Mapped 97 types in new source (C:\code\GS3\Scripts\Patches).
+Comparing patched methods...
+DEBUG: GenerateDiffHtml called
+ExplicitSimpleDiff called with:
+  oldLine: &#39;    // This is a completely different comment
+&#39;
+  newLine: &#39;    // This is a new line that will be added
+&#39;
+  isOldVersion: True
+  Found 0 literals in oldLine:
+  Found 0 literals in newLine:
+  No literals found or lines are identical - returning full line
+ExplicitSimpleDiff called with:
+  oldLine: &#39;    int value = 42;
+&#39;
+  newLine: &#39;    int value = 100;
+&#39;
+  isOldVersion: True
+  Found 1 literals in oldLine:
+    [0] &#39;42&#39; at position 16
+  Found 1 literals in newLine:
+    [0] &#39;100&#39; at position 16
+    Difference found at index 0: &#39;42&#39; vs &#39;100&#39;
+  Single literal difference found - returning with highlighted &#39;42&#39;
+ExplicitSimpleDiff called with:
+  oldLine: &#39;    string name = &quot;oldName&quot;;
+&#39;
+  newLine: &#39;    string name = &quot;newName&quot;;
+&#39;
+  isOldVersion: True
+  Found 1 literals in oldLine:
+    [0] &#39;&quot;oldName&quot;&#39; at position 18
+  Found 1 literals in newLine:
+    [0] &#39;&quot;newName&quot;&#39; at position 18
+    Difference found at index 0: &#39;&quot;oldName&quot;&#39; vs &#39;&quot;newName&quot;&#39;
+  Single literal difference found - returning with highlighted &#39;&quot;oldName&quot;&#39;
+ExplicitSimpleDiff called with:
+  oldLine: &#39;    Console.WriteLine(&quot;This line is going to be deleted&quot;);
+&#39;
+  newLine: &#39;    Console.WriteLine(&quot;This is a brand new line&quot;);
+&#39;
+  isOldVersion: True
+  Found 1 literals in oldLine:
+    [0] &#39;&quot;This line is going to be deleted&quot;&#39; at position 22
+  Found 1 literals in newLine:
+    [0] &#39;&quot;This is a brand new line&quot;&#39; at position 22
+    Difference found at index 0: &#39;&quot;This line is going to be deleted&quot;&#39; vs &#39;&quot;This is a brand new line&quot;&#39;
+  Single literal difference found - returning with highlighted &#39;&quot;This line is going to be deleted&quot;&#39;
+ExplicitSimpleDiff called with:
+  oldLine: &#39;        DoSomething(&quot;old parameter&quot;);
+&#39;
+  newLine: &#39;        DoSomething(&quot;new parameter&quot;);
+&#39;
+  isOldVersion: True
+  Found 1 literals in oldLine:
+    [0] &#39;&quot;old parameter&quot;&#39; at position 20
+  Found 1 literals in newLine:
+    [0] &#39;&quot;new parameter&quot;&#39; at position 20
+    Difference found at index 0: &#39;&quot;old parameter&quot;&#39; vs &#39;&quot;new parameter&quot;&#39;
+  Single literal difference found - returning with highlighted &#39;&quot;old parameter&quot;&#39;
+ExplicitSimpleDiff called with:
+  oldLine: &#39;    int value = 42;
+&#39;
+  newLine: &#39;    int value = 100;
+&#39;
+  isOldVersion: False
+  Found 1 literals in oldLine:
+    [0] &#39;42&#39; at position 16
+  Found 1 literals in newLine:
+    [0] &#39;100&#39; at position 16
+    Difference found at index 0: &#39;42&#39; vs &#39;100&#39;
+  Single literal difference found - returning with highlighted &#39;100&#39;
+ExplicitSimpleDiff called with:
+  oldLine: &#39;    string name = &quot;oldName&quot;;
+&#39;
+  newLine: &#39;    string name = &quot;newName&quot;;
+&#39;
+  isOldVersion: False
+  Found 1 literals in oldLine:
+    [0] &#39;&quot;oldName&quot;&#39; at position 18
+  Found 1 literals in newLine:
+    [0] &#39;&quot;newName&quot;&#39; at position 18
+    Difference found at index 0: &#39;&quot;oldName&quot;&#39; vs &#39;&quot;newName&quot;&#39;
+  Single literal difference found - returning with highlighted &#39;&quot;newName&quot;&#39;
+ExplicitSimpleDiff called with:
+  oldLine: &#39;    // This is a completely different comment
+&#39;
+  newLine: &#39;    // This is a new line that will be added
+&#39;
+  isOldVersion: False
+  Found 0 literals in oldLine:
+  Found 0 literals in newLine:
+  No literals found or lines are identical - returning full line
+ExplicitSimpleDiff called with:
+  oldLine: &#39;    Console.WriteLine(&quot;This line is going to be deleted&quot;);
+&#39;
+  newLine: &#39;    Console.WriteLine(&quot;This is a brand new line&quot;);
+&#39;
+  isOldVersion: False
+  Found 1 literals in oldLine:
+    [0] &#39;&quot;This line is going to be deleted&quot;&#39; at position 22
+  Found 1 literals in newLine:
+    [0] &#39;&quot;This is a brand new line&quot;&#39; at position 22
+    Difference found at index 0: &#39;&quot;This line is going to be deleted&quot;&#39; vs &#39;&quot;This is a brand new line&quot;&#39;
+  Single literal difference found - returning with highlighted &#39;&quot;This is a brand new line&quot;&#39;
+ExplicitSimpleDiff called with:
+  oldLine: &#39;        DoSomething(&quot;old parameter&quot;);
+&#39;
+  newLine: &#39;        DoSomething(&quot;new parameter&quot;);
+&#39;
+  isOldVersion: False
+  Found 1 literals in oldLine:
+    [0] &#39;&quot;old parameter&quot;&#39; at position 20
+  Found 1 literals in newLine:
+    [0] &#39;&quot;new parameter&quot;&#39; at position 20
+    Difference found at index 0: &#39;&quot;old parameter&quot;&#39; vs &#39;&quot;new parameter&quot;&#39;
+  Single literal difference found - returning with highlighted &#39;&quot;new parameter&quot;&#39;
+Found 1 changed methods. Generating HTML report...
+</pre></div>
+</div>
+<div id="content">
+<div id="left-panel">
+<ul>
+<li data-id="test-diff">Test Diff Example</li>
+</ul>
+</div>
+<div id="resizer"></div>
+<div id="right-panel">
+<div id="tabs">
+<button class="tab-button active" data-tab="diff">Diff</button>
+<button class="tab-button" data-tab="old">Old Src</button>
+<button class="tab-button" data-tab="new">New Src</button>
+<button class="tab-button" data-tab="patch">Patch Src</button>
+</div>
+<div id="diff-content" class="tab-content active"></div>
+<div id="old-content" class="tab-content"></div>
+<div id="new-content" class="tab-content"></div>
+<div id="patch-content" class="tab-content"></div>
+</div>
+</div>
+<script>
+var methods = {
+  'test-diff': {
+    diff: `<div class="diff-container">
+<div class="diff-resizer"></div>
+<div class="old-pane">
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">1</span><span class="new-line-num">1</span></div>
+  <div class="line-content">public void TestMethod() 
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">2</span><span class="new-line-num">2</span></div>
+  <div class="line-content">{
+</div>
+</div>
+<div class="diff-line modified-line deleted-part">
+  <div class="line-numbers"><span class="old-line-num">3</span><span class="new-line-num">7</span></div>
+  <div class="line-content">    // This is a completely different comment
+</div>
+</div>
+<div class="diff-line modified-line deleted-part">
+  <div class="line-numbers"><span class="old-line-num">4</span><span class="new-line-num">4</span></div>
+  <div class="line-content">    int value = <span class="deleted">42</span>;
+</div>
+</div>
+<div class="diff-line modified-line deleted-part">
+  <div class="line-numbers"><span class="old-line-num">5</span><span class="new-line-num">5</span></div>
+  <div class="line-content">    string name = <span class="deleted">&quot;oldName&quot;</span>;
+</div>
+</div>
+<div class="diff-line empty-line">
+  <div class="line-numbers"><span class="old-line-num">...</span><span class="new-line-num">3</span></div>
+  <div class="line-content"></div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">6</span><span class="new-line-num">6</span></div>
+  <div class="line-content">    
+</div>
+</div>
+<div class="diff-line deleted-line">
+  <div class="line-numbers"><span class="old-line-num">7</span><span class="new-line-num">...</span></div>
+  <div class="line-content">    // This line will be deleted
+</div>
+</div>
+<div class="diff-line modified-line deleted-part">
+  <div class="line-numbers"><span class="old-line-num">8</span><span class="new-line-num">8</span></div>
+  <div class="line-content">    Console.WriteLine(<span class="deleted">&quot;This line is going to be deleted&quot;</span>);
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">9</span><span class="new-line-num">9</span></div>
+  <div class="line-content">    
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">10</span><span class="new-line-num">10</span></div>
+  <div class="line-content">    // This line will stay the same
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">11</span><span class="new-line-num">11</span></div>
+  <div class="line-content">    bool isEnabled = true;
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">12</span><span class="new-line-num">12</span></div>
+  <div class="line-content">    
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">13</span><span class="new-line-num">13</span></div>
+  <div class="line-content">    // Common code with some changes
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">14</span><span class="new-line-num">14</span></div>
+  <div class="line-content">    if (isEnabled) 
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">15</span><span class="new-line-num">15</span></div>
+  <div class="line-content">    {
+</div>
+</div>
+<div class="diff-line modified-line deleted-part">
+  <div class="line-numbers"><span class="old-line-num">16</span><span class="new-line-num">16</span></div>
+  <div class="line-content">        DoSomething(<span class="deleted">&quot;old parameter&quot;</span>);
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">17</span><span class="new-line-num">17</span></div>
+  <div class="line-content">    }
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">18</span><span class="new-line-num">18</span></div>
+  <div class="line-content">}</div>
+</div>
+</div>
+<div class="new-pane">
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">1</span><span class="new-line-num">1</span></div>
+  <div class="line-content">public void TestMethod() 
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">2</span><span class="new-line-num">2</span></div>
+  <div class="line-content">{
+</div>
+</div>
+<div class="diff-line inserted-line">
+  <div class="line-numbers"><span class="old-line-num">...</span><span class="new-line-num">3</span></div>
+  <div class="line-content">    // This comment has nothing in common with the old one at all
+</div>
+</div>
+<div class="diff-line modified-line inserted-part">
+  <div class="line-numbers"><span class="old-line-num">4</span><span class="new-line-num">4</span></div>
+  <div class="line-content">    int value = <span class="inserted">100</span>;
+</div>
+</div>
+<div class="diff-line modified-line inserted-part">
+  <div class="line-numbers"><span class="old-line-num">5</span><span class="new-line-num">5</span></div>
+  <div class="line-content">    string name = <span class="inserted">&quot;newName&quot;</span>;
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">6</span><span class="new-line-num">6</span></div>
+  <div class="line-content">    
+</div>
+</div>
+<div class="diff-line empty-line">
+  <div class="line-numbers"><span class="old-line-num">7</span><span class="new-line-num">...</span></div>
+  <div class="line-content"></div>
+</div>
+<div class="diff-line modified-line inserted-part">
+  <div class="line-numbers"><span class="old-line-num">3</span><span class="new-line-num">7</span></div>
+  <div class="line-content">    // This is a new line that will be added
+</div>
+</div>
+<div class="diff-line modified-line inserted-part">
+  <div class="line-numbers"><span class="old-line-num">8</span><span class="new-line-num">8</span></div>
+  <div class="line-content">    Console.WriteLine(<span class="inserted">&quot;This is a brand new line&quot;</span>);
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">9</span><span class="new-line-num">9</span></div>
+  <div class="line-content">    
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">10</span><span class="new-line-num">10</span></div>
+  <div class="line-content">    // This line will stay the same
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">11</span><span class="new-line-num">11</span></div>
+  <div class="line-content">    bool isEnabled = true;
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">12</span><span class="new-line-num">12</span></div>
+  <div class="line-content">    
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">13</span><span class="new-line-num">13</span></div>
+  <div class="line-content">    // Common code with some changes
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">14</span><span class="new-line-num">14</span></div>
+  <div class="line-content">    if (isEnabled) 
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">15</span><span class="new-line-num">15</span></div>
+  <div class="line-content">    {
+</div>
+</div>
+<div class="diff-line modified-line inserted-part">
+  <div class="line-numbers"><span class="old-line-num">16</span><span class="new-line-num">16</span></div>
+  <div class="line-content">        DoSomething(<span class="inserted">&quot;new parameter&quot;</span>);
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">17</span><span class="new-line-num">17</span></div>
+  <div class="line-content">    }
+</div>
+</div>
+<div class="diff-line unchanged-line">
+  <div class="line-numbers"><span class="old-line-num">18</span><span class="new-line-num">18</span></div>
+  <div class="line-content">}</div>
+</div>
+</div>
+</div>
+`,
+    old: `<pre><code>public void TestMethod() 
+{
+    // This is a completely different comment
+    int value = 42;
+    string name = &quot;oldName&quot;;
+    
+    // This line will be deleted
+    Console.WriteLine(&quot;This line is going to be deleted&quot;);
+    
+    // This line will stay the same
+    bool isEnabled = true;
+    
+    // Common code with some changes
+    if (isEnabled) 
+    {
+        DoSomething(&quot;old parameter&quot;);
+    }
+}</code></pre>`,
+    new: `<pre><code>public void TestMethod() 
+{
+    // This comment has nothing in common with the old one at all
+    int value = 100;
+    string name = &quot;newName&quot;;
+    
+    // This is a new line that will be added
+    Console.WriteLine(&quot;This is a brand new line&quot;);
+    
+    // This line will stay the same
+    bool isEnabled = true;
+    
+    // Common code with some changes
+    if (isEnabled) 
+    {
+        DoSomething(&quot;new parameter&quot;);
+    }
+}</code></pre>`,
+    patch: `<pre><code>[HarmonyPatch(typeof(GameMain), nameof(GameMain.End))]
+public static class End
+{
+    static void Postfix()
+    {
+        // Patch implementation
+        Console.WriteLine(&quot;Patch applied!&quot;);
+    }
+}</code></pre>`
+  },
+};
+
+                function initializeResizers() {
+                    // Initialize the diff pane resizer
+                    const diffContainer = document.querySelector('.diff-container');
+                    if (diffContainer) {
+                        const resizer = diffContainer.querySelector('.diff-resizer');
+                        if (resizer) {
+                            // Make sure resizer is initially positioned at 50%
+                            resizer.style.left = '50%';
+                        }
+                    }
+                }
+                
+                // Call initializeResizers after page load and after selecting a method
+                document.addEventListener('DOMContentLoaded', () => {
+                    initializeResizers();
+                });
+                
+                function selectMethod(id) {
+                    var method = methods[id];
+                    if (!method) return;
+                    document.getElementById('diff-content').innerHTML = method.diff;
+                    document.getElementById('old-content').innerHTML = method.old;
+                    document.getElementById('new-content').innerHTML = method.new;
+                    document.getElementById('patch-content').innerHTML = method.patch;
+                    var lis = document.querySelectorAll('#left-panel li');
+                    lis.forEach(li => li.classList.remove('active'));
+                    document.querySelector(`#left-panel li[data-id='${id}']`).classList.add('active');
+                    var activeTab = document.querySelector('.tab-button.active').dataset.tab;
+                    showTab(activeTab);
+                    
+                    // Initialize the resizers after loading new content
+                    setTimeout(initializeResizers, 10);
+                    setupDiffResizer();
+                }
+
+                function showTab(tabId) {
+                    var contents = document.querySelectorAll('.tab-content');
+                    contents.forEach(content => content.classList.remove('active'));
+                    document.getElementById(`${tabId}-content`).classList.add('active');
+                    var buttons = document.querySelectorAll('.tab-button');
+                    buttons.forEach(btn => btn.classList.remove('active'));
+                    document.querySelector(`.tab-button[data-tab='${tabId}']`).classList.add('active');
+                    if (tabId === 'diff') setupDiffResizer();
+                }
+
+                function setupPaneResizer() {
+                    const leftPanel = document.getElementById('left-panel');
+                    const resizer = document.getElementById('resizer');
+                    const rightPanel = document.getElementById('right-panel');
+                    let isResizing = false;
+
+                    resizer.addEventListener('mousedown', (e) => {
+                        isResizing = true;
+                        document.body.style.cursor = 'col-resize';
+                        e.preventDefault();
+                    });
+
+                    document.addEventListener('mousemove', (e) => {
+                        if (!isResizing) return;
+                        
+                        // Use pageX for more accurate position
+                        const containerRect = document.getElementById('content').getBoundingClientRect();
+                        const containerLeft = containerRect.left;
+                        const containerWidth = containerRect.width;
+                        
+                        // Calculate the new width as pixels first, then convert to percentage
+                        const newWidth = e.pageX - containerLeft;
+                        const newWidthPercent = (newWidth / containerWidth) * 100;
+                        
+                        if (newWidthPercent >= 10 && newWidthPercent <= 50) {
+                            leftPanel.style.width = `${newWidthPercent}%`;
+                            rightPanel.style.width = `${100 - newWidthPercent}%`;
+                        }
+                    });
+
+                    document.addEventListener('mouseup', () => {
+                        isResizing = false;
+                        document.body.style.cursor = 'default';
+                    });
+                }
+
+                function setupDiffResizer() {
+                    const diffContainer = document.querySelector('.diff-container');
+                    if (!diffContainer) return;
+                    
+                    const oldPane = diffContainer.querySelector('.old-pane');
+                    const resizer = diffContainer.querySelector('.diff-resizer');
+                    const newPane = diffContainer.querySelector('.new-pane');
+                    
+                    if (!oldPane || !resizer || !newPane) return;
+                    
+                    let isResizing = false;
+
+                    resizer.addEventListener('mousedown', (e) => {
+                        isResizing = true;
+                        document.body.style.cursor = 'col-resize';
+                        e.preventDefault();
+                    });
+
+                    document.addEventListener('mousemove', (e) => {
+                        if (!isResizing) return;
+                        
+                        const containerRect = diffContainer.getBoundingClientRect();
+                        const containerLeft = containerRect.left;
+                        const containerWidth = containerRect.width;
+                        
+                        // Calculate the new width as pixels first
+                        const newWidth = e.pageX - containerLeft;
+                        
+                        // Handle the resize by updating the pane widths
+                        if (newWidth >= containerWidth * 0.2 && newWidth <= containerWidth * 0.8) {
+                            const percentage = (newWidth / containerWidth) * 100;
+                            oldPane.style.width = `${percentage}%`;
+                            newPane.style.width = `${100 - percentage}%`;
+                            resizer.style.left = `${percentage}%`;
+                        }
+                    });
+
+                    document.addEventListener('mouseup', () => {
+                        isResizing = false;
+                        document.body.style.cursor = 'default';
+                    });
+                }
+
+                var toggleBtn = document.getElementById('log-toggle');
+                var logContent = document.getElementById('log-content');
+                // Log is collapsed by default
+                logContent.style.display = 'none';
+                toggleBtn.textContent = 'Show Log';
+                
+                toggleBtn.addEventListener('click', () => {
+                    if (logContent.style.display === 'block') {
+                        logContent.style.display = 'none';
+                        toggleBtn.textContent = 'Show Log';
+                    } else {
+                        logContent.style.display = 'block';
+                        toggleBtn.textContent = 'Hide Log';
+                    }
+                });
+
+                var firstLi = document.querySelector('#left-panel li');
+                if (firstLi) selectMethod(firstLi.dataset.id);
+                setupPaneResizer();
+
+                document.querySelectorAll('#left-panel li').forEach(li => {
+                    li.addEventListener('click', () => selectMethod(li.dataset.id));
+                });
+                
+                document.querySelectorAll('.tab-button').forEach(btn => {
+                    btn.addEventListener('click', () => showTab(btn.dataset.tab));
+                });
+            
+</script>
+</body>
+</html>

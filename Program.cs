@@ -17,30 +17,40 @@ namespace UnityDiffTool
     class Program
     {
         static StringBuilder consoleLog = new StringBuilder();
+        static bool verboseMode = false; // Flag to control debug logging
 
         static void Log(string message)
         {
             // Log to both the console log buffer and directly to console for immediate visibility
             consoleLog.AppendLine(message);
-            Console.WriteLine(message); // Direct console output
+            
+            // Only print DEBUG messages in verbose mode, but always print other messages
+            if (verboseMode || !message.StartsWith("DEBUG"))
+            {
+                Console.WriteLine(message);
+            }
         }
 
         static void Main(string[] args)
         {
             try
             {
-                // Add debug test case to verify our diffing
-                TestInlineDiff();
+                // Check for verbose flag
+                verboseMode = args.Contains("--verbose");
                 
-                if (args.Length != 3)
+                // Get non-flag arguments
+                var nonFlagArgs = args.Where(arg => !arg.StartsWith("--")).ToArray();
+                
+                if (nonFlagArgs.Length < 3)
                 {
-                    Log("Usage: UnityDiffTool <old_game_src> <new_game_src> <mod_src>");
+                    Console.WriteLine("Usage: UnityDiffTool.exe <mod source folder> <old src folder> <new src folder> [--verbose]");
+                    Console.WriteLine("  --verbose: Enable detailed debug output");
                     return;
                 }
 
-                string oldSrcFolder = args[0];
-                string newSrcFolder = args[1];
-                string modSrcFolder = args[2];
+                string modSrcFolder = nonFlagArgs[0];
+                string oldSrcFolder = nonFlagArgs[1];
+                string newSrcFolder = nonFlagArgs[2];
 
                 foreach (var folder in new[] { oldSrcFolder, newSrcFolder, modSrcFolder })
                 {
@@ -71,8 +81,11 @@ namespace UnityDiffTool
                 Log("Comparing patched methods...");
                 var reportItems = AnalyzePatchedMethods(patchMethods, oldClassMap, newClassMap, modSrcFolder);
 
-                // Add a test diff to demonstrate different highlighting styles
-                reportItems.Insert(0, GenerateTestDiff());
+                // Only add test diff in verbose mode
+                if (verboseMode)
+                {
+                    reportItems.Insert(0, GenerateTestDiff());
+                }
 
                 if (reportItems.Count == 0)
                 {
@@ -332,7 +345,7 @@ namespace UnityDiffTool
 
         static string GenerateDiffHtml(string oldText, string newText)
         {
-            Console.WriteLine("DEBUG: GenerateDiffHtml called");
+            Log("DEBUG: GenerateDiffHtml called");
             
             // Create a line-level differ
             var differ = new Differ();
@@ -345,9 +358,12 @@ namespace UnityDiffTool
                 new LineEndingsPreservingChunker()
             );
 
-            Console.WriteLine($"DEBUG: Found {diff.Lines.Count} total diff lines");
-            Console.WriteLine($"DEBUG: Deleted lines: {diff.Lines.Count(l => l.Type == ChangeType.Deleted)}");
-            Console.WriteLine($"DEBUG: Inserted lines: {diff.Lines.Count(l => l.Type == ChangeType.Inserted)}");
+            if (verboseMode)
+            {
+                Console.WriteLine($"DEBUG: Found {diff.Lines.Count} total diff lines");
+                Console.WriteLine($"DEBUG: Deleted lines: {diff.Lines.Count(l => l.Type == ChangeType.Deleted)}");
+                Console.WriteLine($"DEBUG: Inserted lines: {diff.Lines.Count(l => l.Type == ChangeType.Inserted)}");
+            }
             
             // Split lines for our own processing
             var oldLines = oldText.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
@@ -377,10 +393,13 @@ namespace UnityDiffTool
                 if (bestMatch != null)
                 {
                     // Found a similar line - treat as modified
-                    Console.WriteLine($"DEBUG: Found modified line pair:");
-                    Console.WriteLine($"  Old: '{deleted.Text}'");
-                    Console.WriteLine($"  New: '{bestMatch.Line.Text}'");
-                    Console.WriteLine($"  Similarity: {bestMatch.Similarity:P1}");
+                    if (verboseMode)
+                    {
+                        Console.WriteLine($"DEBUG: Found modified line pair:");
+                        Console.WriteLine($"  Old: '{deleted.Text}'");
+                        Console.WriteLine($"  New: '{bestMatch.Line.Text}'");
+                        Console.WriteLine($"  Similarity: {bestMatch.Similarity:P1}");
+                    }
                     
                     modifiedPairs.Add((deleted, bestMatch.Line));
                     remainingInserted.Remove(bestMatch.Line);
@@ -388,90 +407,161 @@ namespace UnityDiffTool
                 }
             }
             
+            // Build mapping of lines to their numbers in the original files
+            Dictionary<DiffPiece, int> oldLineNumbers = new Dictionary<DiffPiece, int>();
+            Dictionary<DiffPiece, int> newLineNumbers = new Dictionary<DiffPiece, int>();
+            
+            int oldLineCounter = 1;
+            int newLineCounter = 1;
+            
+            foreach (var line in diff.Lines)
+            {
+                if (line.Type != ChangeType.Inserted)
+                {
+                    oldLineNumbers[line] = oldLineCounter++;
+                }
+                
+                if (line.Type != ChangeType.Deleted)
+                {
+                    newLineNumbers[line] = newLineCounter++;
+                }
+            }
+            
             // Build the HTML
             var sb = new StringBuilder();
             sb.AppendLine("<div class=\"diff-container\">");
             
-            // Old pane
-            sb.AppendLine("<div class=\"diff-pane old-pane\">");
-            int oldLineNum = 1;
-            int oldIndex = 0;
+            // Add the resizer between panes
+            sb.AppendLine("<div class=\"diff-resizer\"></div>");
             
+            // Left pane (old version)
+            sb.AppendLine("<div class=\"old-pane\">");
+            
+            // Process all lines for the old pane
             foreach (var line in diff.Lines)
             {
+                // Skip inserted lines in the old pane
                 if (line.Type == ChangeType.Inserted)
                 {
-                    // For inserted lines in new pane, add a blank line in old pane
+                    // For inserted lines that are part of a modified pair, we've already shown them
                     var pair = modifiedPairs.FirstOrDefault(p => p.Inserted == line);
                     if (pair.Deleted == null)
                     {
-                        // This is a pure insertion, add blank line
-                        sb.AppendLine($"<pre class=\"line unchanged-line empty-line\" data-line=\"{oldLineNum++}\"></pre>");
+                        // This is a pure insertion, add an empty line
+                        sb.AppendLine("<div class=\"diff-line empty-line\">");
+                        sb.AppendLine($"  <div class=\"line-numbers\"><span class=\"old-line-num\">...</span><span class=\"new-line-num\">{newLineNumbers[line]}</span></div>");
+                        sb.AppendLine("  <div class=\"line-content\"></div>");
+                        sb.AppendLine("</div>");
                     }
                     continue;
                 }
                 
-                var cssClass = line.Type == ChangeType.Deleted ? "deleted-line" : "unchanged-line";
+                // Determine line type and CSS class
+                string cssClass;
+                string oldLineNum = oldLineNumbers[line].ToString();
+                string newLineNum = "...";
+                string content;
                 
-                // Check if this is part of a modified pair
-                var pair2 = modifiedPairs.FirstOrDefault(p => p.Deleted == line);
-                if (pair2.Inserted != null)
-                {
-                    // This is a modified line - do character level diff
-                    string html = ExplicitSimpleDiff(line.Text, pair2.Inserted.Text, true);
-                    sb.AppendLine($"<pre class=\"line modified-line\" data-line=\"{oldLineNum++}\">{html}</pre>");
-                }
-                else
-                {
-                    // Regular deleted or unchanged line
-                    sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{oldLineNum++}\">{HtmlEncode(line.Text)}</pre>");
-                }
-                
-                oldIndex++;
-            }
-            
-            sb.AppendLine("</div>");
-            
-            // New pane
-            sb.AppendLine("<div class=\"diff-pane new-pane\">");
-            int newLineNum = 1;
-            int newIndex = 0;
-            
-            foreach (var line in diff.Lines)
-            {
                 if (line.Type == ChangeType.Deleted)
                 {
-                    // For deleted lines in old pane, add a blank line in new pane
-                    var pair3 = modifiedPairs.FirstOrDefault(p => p.Deleted == line);
-                    if (pair3.Inserted == null)
+                    cssClass = "deleted-line";
+                    
+                    // Check if this is part of a modified pair
+                    var pair = modifiedPairs.FirstOrDefault(p => p.Deleted == line);
+                    if (pair.Inserted != null)
                     {
-                        // This is a pure deletion, add blank line
-                        sb.AppendLine($"<pre class=\"line unchanged-line empty-line\" data-line=\"{newLineNum++}\"></pre>");
+                        cssClass = "modified-line deleted-part";
+                        newLineNum = newLineNumbers[pair.Inserted].ToString();
+                        
+                        // Use inline diff for modified lines
+                        content = ExplicitSimpleDiff(line.Text, pair.Inserted.Text, true);
+                    }
+                    else
+                    {
+                        // Pure deletion
+                        content = HtmlEncode(line.Text);
+                    }
+                }
+                else // Unchanged
+                {
+                    cssClass = "unchanged-line";
+                    newLineNum = newLineNumbers[line].ToString();
+                    content = HtmlEncode(line.Text);
+                }
+                
+                // Create the line with dual line numbers
+                sb.AppendLine($"<div class=\"diff-line {cssClass}\">");
+                sb.AppendLine($"  <div class=\"line-numbers\"><span class=\"old-line-num\">{oldLineNum}</span><span class=\"new-line-num\">{newLineNum}</span></div>");
+                sb.AppendLine($"  <div class=\"line-content\">{content}</div>");
+                sb.AppendLine("</div>");
+            }
+            
+            sb.AppendLine("</div>"); // End old-pane
+            
+            // Right pane (new version)
+            sb.AppendLine("<div class=\"new-pane\">");
+            
+            // Process all lines for the new pane
+            foreach (var line in diff.Lines)
+            {
+                // Skip deleted lines in the new pane
+                if (line.Type == ChangeType.Deleted)
+                {
+                    // For deleted lines that are part of a modified pair, we've already shown them
+                    var pair = modifiedPairs.FirstOrDefault(p => p.Deleted == line);
+                    if (pair.Inserted == null)
+                    {
+                        // This is a pure deletion, add an empty line
+                        sb.AppendLine("<div class=\"diff-line empty-line\">");
+                        sb.AppendLine($"  <div class=\"line-numbers\"><span class=\"old-line-num\">{oldLineNumbers[line]}</span><span class=\"new-line-num\">...</span></div>");
+                        sb.AppendLine("  <div class=\"line-content\"></div>");
+                        sb.AppendLine("</div>");
                     }
                     continue;
                 }
                 
-                var cssClass = line.Type == ChangeType.Inserted ? "inserted-line" : "unchanged-line";
+                // Determine line type and CSS class
+                string cssClass;
+                string oldLineNum = "...";
+                string newLineNum = newLineNumbers[line].ToString();
+                string content;
                 
-                // Check if this is part of a modified pair
-                var pair4 = modifiedPairs.FirstOrDefault(p => p.Inserted == line);
-                if (pair4.Deleted != null)
+                if (line.Type == ChangeType.Inserted)
                 {
-                    // This is a modified line - do character level diff
-                    string html = ExplicitSimpleDiff(pair4.Deleted.Text, line.Text, false);
-                    sb.AppendLine($"<pre class=\"line modified-line\" data-line=\"{newLineNum++}\">{html}</pre>");
+                    cssClass = "inserted-line";
+                    
+                    // Check if this is part of a modified pair
+                    var pair = modifiedPairs.FirstOrDefault(p => p.Inserted == line);
+                    if (pair.Deleted != null)
+                    {
+                        cssClass = "modified-line inserted-part";
+                        oldLineNum = oldLineNumbers[pair.Deleted].ToString();
+                        
+                        // Use inline diff for modified lines
+                        content = ExplicitSimpleDiff(pair.Deleted.Text, line.Text, false);
+                    }
+                    else
+                    {
+                        // Pure insertion
+                        content = HtmlEncode(line.Text);
+                    }
                 }
-                else
+                else // Unchanged
                 {
-                    // Regular inserted or unchanged line
-                    sb.AppendLine($"<pre class=\"line {cssClass}\" data-line=\"{newLineNum++}\">{HtmlEncode(line.Text)}</pre>");
+                    cssClass = "unchanged-line";
+                    oldLineNum = oldLineNumbers[line].ToString();
+                    content = HtmlEncode(line.Text);
                 }
                 
-                newIndex++;
+                // Create the line with dual line numbers
+                sb.AppendLine($"<div class=\"diff-line {cssClass}\">");
+                sb.AppendLine($"  <div class=\"line-numbers\"><span class=\"old-line-num\">{oldLineNum}</span><span class=\"new-line-num\">{newLineNum}</span></div>");
+                sb.AppendLine($"  <div class=\"line-content\">{content}</div>");
+                sb.AppendLine("</div>");
             }
             
-            sb.AppendLine("</div>");
-            sb.AppendLine("</div>");
+            sb.AppendLine("</div>"); // End new-pane
+            sb.AppendLine("</div>"); // End diff-container
             return sb.ToString();
         }
         
@@ -538,6 +628,8 @@ namespace UnityDiffTool
                     --inserted: #2ecc71;
                     --modified: #f1c40f;
                     --line-num: #7f8c8d;
+                    --gutter-bg: #1e272e;
+                    --line-hover: rgba(52, 152, 219, 0.1);
                 }
                 body {
                     font-family: 'Segoe UI', Arial, sans-serif;
@@ -555,156 +647,235 @@ namespace UnityDiffTool
                     box-shadow: 0 2px 5px rgba(0,0,0,0.2);
                     z-index: 10;
                 }
-                #header h1 {
+                h1, h2, h3, h4 {
                     margin: 0;
-                    font-size: 24px;
+                    font-weight: 600;
                 }
-                #summary {
-                    margin-top: 10px;
-                    font-style: italic;
+                h1 {
+                    font-size: 1.5rem;
+                    color: var(--text);
                 }
-                #log-toggle {
-                    background: var(--highlight);
-                    border: none;
-                    padding: 8px 15px;
-                    color: white;
-                    cursor: pointer;
-                    border-radius: 5px;
-                    margin-top: 10px;
-                }
-                #log-content {
-                    display: none;
-                    background: #ffffff;
-                    color: #333;
-                    padding: 20px;
-                    box-sizing: border-box;
-                    max-height: none;
-                    overflow-y: auto;
-                    margin-top: 10px;
-                    border-radius: 5px;
-                    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+                h2 {
+                    font-size: 1.3rem;
+                    color: var(--text);
+                    margin-bottom: 10px;
                 }
                 #content {
-                    display: flex;
                     flex: 1;
+                    display: flex;
                     overflow: hidden;
                 }
                 #left-panel {
-                    width: 30%;
+                    width: 25%;
+                    min-width: 200px;
                     background: var(--secondary);
                     overflow-y: auto;
-                    padding: 20px;
-                    box-shadow: inset -2px 0 5px rgba(0,0,0,0.1);
-                    resize: horizontal;
-                    min-width: 200px;
-                    max-width: 80%;
+                    padding: 15px 0;
+                    border-right: 1px solid rgba(0,0,0,0.1);
+                }
+                #left-panel ul {
+                    list-style: none;
+                    padding: 0;
+                    margin: 0;
+                }
+                #left-panel li {
+                    padding: 10px 15px;
+                    cursor: pointer;
+                    border-left: 3px solid transparent;
+                }
+                #left-panel li:hover {
+                    background: rgba(0,0,0,0.1);
+                }
+                #left-panel li.active {
+                    background: rgba(0,0,0,0.15);
+                    border-left-color: var(--highlight);
                 }
                 #resizer {
-                    width: 5px;
-                    background: #95a5a6;
+                    width: 6px;
+                    background: var(--secondary);
                     cursor: col-resize;
+                    position: relative;
+                    z-index: 10;
                 }
                 #right-panel {
                     flex: 1;
-                    padding: 20px;
-                    overflow-y: auto;
+                    display: flex;
+                    flex-direction: column;
+                    overflow: hidden;
                 }
                 #tabs {
-                    margin-bottom: 15px;
                     display: flex;
-                    gap: 10px;
+                    background: var(--secondary);
+                    border-bottom: 1px solid rgba(0,0,0,0.1);
                 }
                 .tab-button {
-                    padding: 10px 20px;
-                    background: var(--secondary);
+                    padding: 12px 20px;
+                    cursor: pointer;
+                    background: none;
                     border: none;
                     color: var(--text);
-                    cursor: pointer;
-                    border-radius: 5px;
-                    transition: background 0.3s;
+                    font-weight: 500;
+                    border-bottom: 2px solid transparent;
+                    opacity: 0.7;
+                    transition: all 0.2s ease;
                 }
                 .tab-button:hover {
-                    background: rgba(255,255,255,0.1);
+                    opacity: 0.9;
                 }
                 .tab-button.active {
-                    background: var(--highlight);
+                    opacity: 1;
+                    border-bottom-color: var(--highlight);
                 }
                 .tab-content {
                     display: none;
-                    background: white;
-                    color: #333;
-                    padding: 15px;
-                    border-radius: 5px;
-                    box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-                    overflow-y: auto;
-                    height: calc(100vh - 180px);
+                    flex: 1;
+                    overflow: auto;
+                    padding: 20px;
                 }
                 .tab-content.active {
                     display: block;
                 }
+                pre {
+                    margin: 0;
+                    font-family: 'Cascadia Code', 'Consolas', monospace;
+                    font-size: 14px;
+                    line-height: 1.4;
+                    white-space: pre;
+                    tab-size: 4;
+                    padding: 5px 0;
+                }
+                code {
+                    font-family: 'Cascadia Code', 'Consolas', monospace;
+                    font-size: 14px;
+                    white-space: pre;
+                    tab-size: 4;
+                }
+                .source-code {
+                    background: #272a3a;
+                    padding: 10px;
+                    overflow-x: auto;
+                    border-radius: 0 0 5px 5px;
+                }
                 .diff-container {
+                    font-family: 'Cascadia Code', 'Consolas', monospace;
+                    font-size: 14px;
+                    line-height: 1.4;
+                    overflow-x: auto;
+                    background: #272a3a;
+                    border-radius: 4px;
                     display: flex;
-                    gap: 0;
+                    height: calc(100vh - 150px);
                     position: relative;
                 }
-                .diff-pane {
+                /* Two-pane diff view style */
+                .old-pane, .new-pane {
+                    flex: 1;
+                    overflow: auto;
+                    background: #272a3a;
                     width: 50%;
-                    background: #f9f9f9;
-                    padding: 10px;
-                    border-radius: 5px;
-                    box-sizing: border-box;
                 }
                 .diff-resizer {
-                    width: 5px;
-                    background: #95a5a6;
+                    width: 6px;
+                    background: rgba(127, 140, 141, 0.3);
                     cursor: col-resize;
                     position: absolute;
+                    left: 50%;
                     top: 0;
                     bottom: 0;
-                    left: 50%;
-                    transform: translateX(-50%);
+                    z-index: 10;
                 }
-.line::before {
-    content: attr(data-line);
-    display: inline-block;
-    width: 40px; /* Fixed width for line numbers */
-    text-align: right;
-    color: var(--line-num, #888);
-    margin-right: 10px;
-}
-.line {
-    display: block;
-    white-space: pre;
-    font-family: 'Consolas', monospace;
-    font-size: 14px;
-    padding-left: 50px;
-    line-height: 1.5em; /* Uniform line spacing */
-    min-height: 1.5em; /* Ensures empty lines match code lines */
-}
-                .deleted, .inserted, .modified {
-                    display: inline;
+                .diff-line {
+                    display: flex;
+                    white-space: pre;
                 }
-                .deleted { color: var(--deleted); text-decoration: line-through; }
-                .inserted { color: var(--inserted); }
-                .modified { color: var(--modified); }
-                .unchanged { color: #333; }
-.deleted-line {
-    background-color: #ffdddd; /* Light red background for deleted lines */
-}
-.inserted-line {
-    background-color: #ddffdd; /* Light green background for inserted lines */
-}
-.modified-line {
-    background-color: #ffffdd; /* Light yellow background for modified lines */
-}
-                #left-panel li.active {
+                .diff-line:hover {
+                    background-color: var(--line-hover);
+                }
+                .line-numbers {
+                    user-select: none;
+                    text-align: right;
+                    color: var(--line-num);
+                    padding: 0 10px;
+                    min-width: 100px;
+                    background-color: var(--gutter-bg);
+                    border-right: 1px solid rgba(127, 140, 141, 0.2);
+                    font-variant-numeric: tabular-nums;
+                    white-space: pre;
+                }
+                .old-line-num, .new-line-num {
+                    display: inline-block;
+                    width: 40px;
+                    text-align: right;
+                    padding-right: 5px;
+                }
+                .line-content {
+                    padding-left: 15px;
+                    white-space: pre;
+                    width: 100%;
+                    overflow-x: visible;
+                }
+                .deleted-line {
+                    background-color: rgba(231, 76, 60, 0.12);
+                }
+                .deleted-line .line-content {
+                    background-color: rgba(231, 76, 60, 0.12);
+                }
+                .inserted-line {
+                    background-color: rgba(46, 204, 113, 0.12);
+                }
+                .inserted-line .line-content {
+                    background-color: rgba(46, 204, 113, 0.12);
+                }
+                .modified-line {
+                    background-color: rgba(241, 196, 15, 0.12);
+                }
+                .modified-line.deleted-part .line-content {
+                    background-color: rgba(231, 76, 60, 0.12);
+                }
+                .modified-line.inserted-part .line-content {
+                    background-color: rgba(46, 204, 113, 0.12);
+                }
+                .unchanged-line {
+                    color: var(--text);
+                }
+                .deleted {
+                    background-color: rgba(231, 76, 60, 0.3);
+                    text-decoration: none;
+                    border-radius: 2px;
+                }
+                .inserted {
+                    background-color: rgba(46, 204, 113, 0.3);
+                    text-decoration: none;
+                    border-radius: 2px;
+                }
+                .empty-line {
+                    background: repeating-linear-gradient(
+                        45deg,
+                        rgba(127, 140, 141, 0.1),
+                        rgba(127, 140, 141, 0.1) 10px,
+                        rgba(127, 140, 141, 0.03) 10px,
+                        rgba(127, 140, 141, 0.03) 20px
+                    );
+                }
+                /* Log styles */
+                #log-toggle {
+                    padding: 5px 10px;
                     background: var(--highlight);
                     color: white;
-                    font-weight: bold;
-                    border: 2px solid white;
-                    box-shadow: 0 0 5px rgba(0,0,0,0.3);
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    margin-top: 10px;
                 }
-
+                #log-content {
+                    display: none;
+                    margin-top: 10px;
+                    max-height: 300px;
+                    overflow: auto;
+                    background: rgba(0,0,0,0.1);
+                    padding: 10px;
+                    border-radius: 4px;
+                }
             ");
             sb.AppendLine("</style>");
             sb.AppendLine("</head>");
@@ -757,6 +928,23 @@ namespace UnityDiffTool
             sb.AppendLine("};");
 
             sb.AppendLine(@"
+                function initializeResizers() {
+                    // Initialize the diff pane resizer
+                    const diffContainer = document.querySelector('.diff-container');
+                    if (diffContainer) {
+                        const resizer = diffContainer.querySelector('.diff-resizer');
+                        if (resizer) {
+                            // Make sure resizer is initially positioned at 50%
+                            resizer.style.left = '50%';
+                        }
+                    }
+                }
+                
+                // Call initializeResizers after page load and after selecting a method
+                document.addEventListener('DOMContentLoaded', () => {
+                    initializeResizers();
+                });
+                
                 function selectMethod(id) {
                     var method = methods[id];
                     if (!method) return;
@@ -769,6 +957,9 @@ namespace UnityDiffTool
                     document.querySelector(`#left-panel li[data-id='${id}']`).classList.add('active');
                     var activeTab = document.querySelector('.tab-button.active').dataset.tab;
                     showTab(activeTab);
+                    
+                    // Initialize the resizers after loading new content
+                    setTimeout(initializeResizers, 10);
                     setupDiffResizer();
                 }
 
@@ -791,14 +982,24 @@ namespace UnityDiffTool
                     resizer.addEventListener('mousedown', (e) => {
                         isResizing = true;
                         document.body.style.cursor = 'col-resize';
+                        e.preventDefault();
                     });
 
                     document.addEventListener('mousemove', (e) => {
                         if (!isResizing) return;
-                        const containerWidth = document.getElementById('content').offsetWidth;
-                        const newLeftWidth = (e.clientX / containerWidth) * 100;
-                        if (newLeftWidth >= 20 && newLeftWidth <= 80) {
-                            leftPanel.style.width = `${newLeftWidth}%`;
+                        
+                        // Use pageX for more accurate position
+                        const containerRect = document.getElementById('content').getBoundingClientRect();
+                        const containerLeft = containerRect.left;
+                        const containerWidth = containerRect.width;
+                        
+                        // Calculate the new width as pixels first, then convert to percentage
+                        const newWidth = e.pageX - containerLeft;
+                        const newWidthPercent = (newWidth / containerWidth) * 100;
+                        
+                        if (newWidthPercent >= 10 && newWidthPercent <= 50) {
+                            leftPanel.style.width = `${newWidthPercent}%`;
+                            rightPanel.style.width = `${100 - newWidthPercent}%`;
                         }
                     });
 
@@ -811,42 +1012,59 @@ namespace UnityDiffTool
                 function setupDiffResizer() {
                     const diffContainer = document.querySelector('.diff-container');
                     if (!diffContainer) return;
+                    
                     const oldPane = diffContainer.querySelector('.old-pane');
                     const resizer = diffContainer.querySelector('.diff-resizer');
                     const newPane = diffContainer.querySelector('.new-pane');
+                    
+                    if (!oldPane || !resizer || !newPane) return;
+                    
                     let isResizing = false;
 
                     resizer.addEventListener('mousedown', (e) => {
                         isResizing = true;
                         document.body.style.cursor = 'col-resize';
+                        e.preventDefault();
                     });
 
                     document.addEventListener('mousemove', (e) => {
                         if (!isResizing) return;
-                        const containerWidth = diffContainer.offsetWidth;
-                        const newOldWidth = (e.clientX - diffContainer.offsetLeft) / containerWidth * 100;
-                        if (newOldWidth >= 20 && newOldWidth <= 80) {
-                            oldPane.style.width = `${newOldWidth}%`;
-                            newPane.style.width = `${100 - newOldWidth}%`;
-                            resizer.style.left = `${newOldWidth}%`;
+                        
+                        const containerRect = diffContainer.getBoundingClientRect();
+                        const containerLeft = containerRect.left;
+                        const containerWidth = containerRect.width;
+                        
+                        // Calculate the new width as pixels first
+                        const newWidth = Math.max(0, Math.min(e.clientX - containerLeft, containerWidth));
+                        const percentage = (newWidth / containerWidth) * 100;
+                        
+                        // Only update if within reasonable bounds (20% to 80%)
+                        if (percentage >= 20 && percentage <= 80) {
+                            oldPane.style.width = `${percentage}%`;
+                            newPane.style.width = `${100 - percentage}%`;
+                            resizer.style.left = `${percentage}%`;
                         }
                     });
 
                     document.addEventListener('mouseup', () => {
-                        isResizing = false;
-                        document.body.style.cursor = 'default';
+                        if (isResizing) {
+                            isResizing = false;
+                            document.body.style.cursor = 'default';
+                        }
                     });
-                }
 
-                document.querySelectorAll('#left-panel li').forEach(li => {
-                    li.addEventListener('click', () => selectMethod(li.dataset.id));
-                });
-                document.querySelectorAll('.tab-button').forEach(btn => {
-                    btn.addEventListener('click', () => showTab(btn.dataset.tab));
-                });
+                    // Ensure initial position is set
+                    resizer.style.left = '50%';
+                    oldPane.style.width = '50%';
+                    newPane.style.width = '50%';
+                }
 
                 var toggleBtn = document.getElementById('log-toggle');
                 var logContent = document.getElementById('log-content');
+                // Log is collapsed by default
+                logContent.style.display = 'none';
+                toggleBtn.textContent = 'Show Log';
+                
                 toggleBtn.addEventListener('click', () => {
                     if (logContent.style.display === 'block') {
                         logContent.style.display = 'none';
@@ -860,6 +1078,14 @@ namespace UnityDiffTool
                 var firstLi = document.querySelector('#left-panel li');
                 if (firstLi) selectMethod(firstLi.dataset.id);
                 setupPaneResizer();
+
+                document.querySelectorAll('#left-panel li').forEach(li => {
+                    li.addEventListener('click', () => selectMethod(li.dataset.id));
+                });
+                
+                document.querySelectorAll('.tab-button').forEach(btn => {
+                    btn.addEventListener('click', () => showTab(btn.dataset.tab));
+                });
             ");
             sb.AppendLine("</script>");
 
@@ -874,11 +1100,11 @@ namespace UnityDiffTool
         {
             string oldCode = @"public void TestMethod() 
 {
-    // This line will have inline changes
+    // This is a completely different comment
     int value = 42;
     string name = ""oldName"";
     
-    // This line will be completely removed
+    // This line will be deleted
     Console.WriteLine(""This line is going to be deleted"");
     
     // This line will stay the same
@@ -893,11 +1119,11 @@ namespace UnityDiffTool
 
             string newCode = @"public void TestMethod() 
 {
-    // This line will have inline changes
+    // This comment has nothing in common with the old one at all
     int value = 100;
     string name = ""newName"";
     
-    // This line will be completely added
+    // This is a new line that will be added
     Console.WriteLine(""This is a brand new line"");
     
     // This line will stay the same
@@ -910,60 +1136,61 @@ namespace UnityDiffTool
     }
 }";
 
-            string patchCode = @"[HarmonyPatch]
-public void TestPatchMethod()
+            string patchCode = @"[HarmonyPatch(typeof(GameMain), nameof(GameMain.End))]
+public static class End
 {
-    // This is just a sample patch method
-    if (!__state)
-        return;
-        
-    // Do patch things here
-    __result = true;
+    static void Postfix()
+    {
+        // Patch implementation
+        Console.WriteLine(""Patch applied!"");
+    }
 }";
 
+            // Generate the diff HTML
             string diffHtml = GenerateDiffHtml(oldCode, newCode);
             
+            // Return the example
             return ("test-diff", "Test Diff Example", diffHtml, HtmlEncode(oldCode), HtmlEncode(newCode), HtmlEncode(patchCode));
         }
 
         // Test method to verify inline diffing
         static void TestInlineDiff()
         {
-            Console.WriteLine("======= TESTING INLINE DIFF =======");
-            
-            // Test case 1: Simple value change
-            string oldLine = "    int value = 42;";
-            string newLine = "    int value = 100;";
-            
-            // Direct test
-            Console.WriteLine("\nTest case 1: Simple value change");
-            string result1 = ExplicitSimpleDiff(oldLine, newLine, true);
-            Console.WriteLine($"HTML Result: {result1}");
-            
-            // Test case 2: Multiple value changes
-            string oldLine2 = "    int value = 42, count = 10;";
-            string newLine2 = "    int value = 100, count = 20;";
-            
-            Console.WriteLine("\nTest case 2: Multiple value changes");
-            string result2 = ExplicitSimpleDiff(oldLine2, newLine2, true);
-            Console.WriteLine($"HTML Result: {result2}");
-            
-            // Test the HTML generation
-            Console.WriteLine("\nTesting full diff HTML generation");
-            string html = GenerateDiffHtml(
-                "public void TestMethod()\n{\n    int value = 42;\n    Console.WriteLine(value);\n}", 
-                "public void TestMethod()\n{\n    int value = 100;\n    Console.WriteLine(value);\n}"
-            );
-            
-            Console.WriteLine($"Full HTML Result:\n{html}");
-            Console.WriteLine("======= END TESTING INLINE DIFF =======");
+            if (verboseMode)
+            {
+                Console.WriteLine("======= TESTING INLINE DIFF =======");
+                
+                // Test case 1: Simple parameter change
+                string result1 = ExplicitSimpleDiff("DoSomething(10, true)", "DoSomething(20, true)", true);
+                Console.WriteLine("\nTest case 1: Simple value change");
+                Console.WriteLine($"HTML Result: {result1}");
+                
+                // Test case 2: Multiple parameter changes
+                string result2 = ExplicitSimpleDiff(
+                    @"SetValues(name: ""John"", age: 30, active: true)", 
+                    @"SetValues(name: ""Jane"", age: 25, active: false)", 
+                    true
+                );
+                Console.WriteLine("\nTest case 2: Multiple value changes");
+                Console.WriteLine($"HTML Result: {result2}");
+                
+                Console.WriteLine("\nTesting full diff HTML generation");
+                var html = GenerateDiffHtml(
+                    "public void TestMethod()\n{\n    int value = 42;\n    Console.WriteLine(value);\n}",
+                    "public void TestMethod()\n{\n    int value = 100;\n    Console.WriteLine(value);\n}"
+                );
+                Console.WriteLine($"Full HTML Result:\n{html}");
+                Console.WriteLine("======= END TESTING INLINE DIFF =======");
+            }
         }
 
         // Very direct, simple diffing that focuses on literal values
         static string ExplicitSimpleDiff(string oldLine, string newLine, bool isOldVersion)
         {
-            // Debug directly to console in case Log method isn't working
-            Console.WriteLine($"DEBUG ExplicitSimpleDiff: oldLine='{oldLine}', newLine='{newLine}', isOldVersion={isOldVersion}");
+            if (verboseMode)
+            {
+                Console.WriteLine($"DEBUG ExplicitSimpleDiff: oldLine='{oldLine}', newLine='{newLine}', isOldVersion={isOldVersion}");
+            }
             
             // Log inputs for debugging
             Log($"ExplicitSimpleDiff called with:");
