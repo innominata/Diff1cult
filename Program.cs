@@ -890,7 +890,7 @@ namespace UnityDiffTool
             sb.AppendLine("<body>");
 
             sb.AppendLine("<div id=\"header\">");
-            sb.AppendLine("<h1>Diff1cult - Relevant Source Change Report<sub style=\"font-size: 0.5em; margin-left: 8px;\">version 1.0 - by innominata, grok3 and claude3.7</sub></h1>");
+            sb.AppendLine("<h1>Diff1cult - Relevant Source Change Report<sub style=\"font-size: 0.5em; margin-left: 8px;\"><a href='https://github.com/innominata/Diff1cult'>version 1.0 - by innominata</a>, grok3 and claude3.7</sub></h1>");
             sb.AppendLine($"<div id=\"summary\">Found {totalPatches} Patched Methods. Changes Detected in {items.Count}.</div>");
             sb.AppendLine("<button id=\"log-toggle\">Show Log</button>");
             sb.AppendLine($"<div id=\"log-content\"><pre>{HtmlEncode(consoleLog.ToString())}</pre></div>");
